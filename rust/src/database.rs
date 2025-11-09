@@ -9,7 +9,7 @@
 use anyhow::{Context, Result};
 use parking_lot::RwLock;
 use pyo3::prelude::*;
-use rusqlite::{params, Connection, OptionalExtension, Row};
+use rusqlite::{params, Connection, OptionalExtension};
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
@@ -24,7 +24,7 @@ use crate::types::Fingerprint;
 /// - Prepared statement caching
 /// - Memory-mapped I/O
 /// - In-memory cache for frequently accessed data
-#[pyclass]
+#[pyclass(unsendable)]
 pub struct TestmonDatabase {
     conn: Arc<RwLock<Connection>>,
     cache: Arc<Cache>,
@@ -33,6 +33,11 @@ pub struct TestmonDatabase {
 }
 
 impl TestmonDatabase {
+    /// Create a new database connection (public Rust API)
+    pub fn open(path: &str) -> Result<Self> {
+        Self::new_internal(path)
+    }
+
     /// Create a new database connection with optimizations
     fn new_internal(path: &str) -> Result<Self> {
         let path_obj = Path::new(path);
@@ -153,6 +158,11 @@ impl TestmonDatabase {
 
             Ok(conn.last_insert_rowid())
         }
+    }
+
+    /// Get stored fingerprint for a file (public Rust API)
+    pub fn get_fingerprint_rust(&self, filename: &str) -> Result<Option<Fingerprint>> {
+        self.get_fingerprint_internal(filename)
     }
 
     /// Get stored fingerprint for a file (if exists)

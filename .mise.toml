@@ -1,0 +1,9 @@
+# mise configuration for pytest-diff
+# Install mise: https://mise.jdx.dev/
+
+[tools]
+python = "3.12"
+rust = "1.75"
+
+[env]
+_.python.venv = { path = ".venv", create = true }

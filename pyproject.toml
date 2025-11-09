@@ -1,0 +1,58 @@
+[build-system]
+requires = ["maturin>=1.5,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "pytest-diff"
+version = "0.1.0"
+description = "Blazingly fast test selection for pytest - only run tests affected by your changes (Rust-powered)"
+readme = "README.md"
+authors = [{name = "Paul Milesi", email = "paul.milesi@example.com"}]
+license = {text = "MIT"}
+requires-python = ">=3.8"
+dependencies = [
+    "pytest>=7.0",
+]
+keywords = ["pytest", "testing", "test-selection", "tdd", "continuous-integration"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Framework :: Pytest",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Rust",
+    "Topic :: Software Development :: Testing",
+]
+
+[project.urls]
+Homepage = "https://github.com/paulmilesi/pytest-diff"
+Repository = "https://github.com/paulmilesi/pytest-diff"
+Issues = "https://github.com/paulmilesi/pytest-diff/issues"
+
+[project.entry-points.pytest11]
+diff = "pytest_diff.plugin"
+
+[tool.maturin]
+python-source = "python"
+module-name = "pytest_diff._core"
+features = ["pyo3/extension-module"]
+
+[tool.pytest.ini_options]
+testpaths = ["python/tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+
+[tool.black]
+line-length = 100
+target-version = ['py38', 'py39', 'py310', 'py311', 'py312']
+
+[tool.ruff]
+line-length = 100
+target-version = "py38"

@@ -1,0 +1,9 @@
+[workspace]
+members = ["rust"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["Paul Milesi <paul.milesi@example.com>"]
+license = "MIT"
+repository = "https://github.com/paulmilesi/pytest-diff"

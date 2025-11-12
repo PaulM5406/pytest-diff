@@ -68,6 +68,50 @@ fn calculate_fingerprint_internal(path: &str) -> Result<Fingerprint> {
     })
 }
 
+/// Save baseline fingerprints for all Python files in a project
+///
+/// This establishes the "known good" state that change detection compares against.
+/// Should be called after tests pass to set the baseline.
+///
+/// # Arguments
+/// * `db_path` - Path to the .testmondata database
+/// * `project_root` - Root directory of the project
+///
+/// # Returns
+/// * Number of files added to baseline
+#[pyfunction]
+pub fn save_baseline(db_path: &str, project_root: &str) -> PyResult<usize> {
+    let count = save_baseline_internal(db_path, project_root).map_err(|e| {
+        pyo3::exceptions::PyRuntimeError::new_err(format!("Failed to save baseline: {}", e))
+    })?;
+
+    Ok(count)
+}
+
+fn save_baseline_internal(db_path: &str, project_root: &str) -> Result<usize> {
+    let mut db = TestmonDatabase::open(db_path)?;
+    let python_files = find_python_files(project_root)?;
+
+    let mut count = 0;
+    for path in python_files {
+        let path_str = path.to_string_lossy().to_string();
+
+        // Calculate fingerprint for current state
+        match calculate_fingerprint_internal(&path_str) {
+            Ok(fp) => {
+                db.save_baseline_fingerprint_internal(fp)?;
+                count += 1;
+            }
+            Err(_) => {
+                // Skip files that can't be fingerprinted (e.g., syntax errors)
+                continue;
+            }
+        }
+    }
+
+    Ok(count)
+}
+
 /// Detect changes between current filesystem state and database
 ///
 /// Uses three-level change detection for optimal performance:
@@ -96,17 +140,26 @@ fn detect_changes_internal(db_path: &str, project_root: &str) -> Result<ChangedF
 
     // Find all Python files in the project
     let python_files = find_python_files(project_root)?;
+    // eprintln!("DEBUG: Found {} Python files to check", python_files.len());
 
     // Process files sequentially
     // TODO: Can optimize with parallel processing later by using multiple database connections
     let changed_entries: Vec<_> = python_files
         .iter()
         .filter_map(|path| {
+            // eprintln!("DEBUG: Checking file: {}", path.display());
             match check_file_changed(&db, path) {
-                Ok(Some(change)) => Some(change),
-                Ok(None) => None,
-                Err(e) => {
-                    eprintln!("Warning: Failed to check {}: {}", path.display(), e);
+                Ok(Some(change)) => {
+                    // eprintln!("DEBUG: File changed: {} with {} changed blocks", path.display(), change.1.len());
+                    Some(change)
+                }
+                Ok(None) => {
+                    // eprintln!("DEBUG: File unchanged: {}", path.display());
+                    None
+                }
+                Err(_) => {
+                    // Only show warnings for actual errors
+                    // eprintln!("Warning: Failed to check {}: {}", path.display(), e);
                     None
                 }
             }
@@ -134,7 +187,10 @@ fn detect_changes_internal(db_path: &str, project_root: &str) -> Result<ChangedF
 fn find_python_files(root: &str) -> Result<Vec<PathBuf>> {
     let mut files = Vec::new();
 
-    for entry in WalkDir::new(root)
+    // Convert root to absolute path
+    let root_path = std::fs::canonicalize(root).unwrap_or_else(|_| PathBuf::from(root));
+
+    for entry in WalkDir::new(&root_path)
         .follow_links(false)
         .into_iter()
         .filter_entry(|e| {
@@ -148,7 +204,13 @@ fn find_python_files(root: &str) -> Result<Vec<PathBuf>> {
 
         // Only include .py files
         if path.is_file() && path.extension().and_then(|s| s.to_str()) == Some("py") {
-            files.push(path.to_path_buf());
+            // Store absolute path
+            let abs_path = if path.is_absolute() {
+                path.to_path_buf()
+            } else {
+                std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+            };
+            files.push(abs_path);
         }
     }
 
@@ -158,18 +220,17 @@ fn find_python_files(root: &str) -> Result<Vec<PathBuf>> {
 /// Check if a file has changed using three-level detection
 ///
 /// Returns Some((filename, changed_checksums)) if changed, None if unchanged
-fn check_file_changed(
-    db: &TestmonDatabase,
-    path: &Path,
-) -> Result<Option<(String, Vec<i32>)>> {
+fn check_file_changed(db: &TestmonDatabase, path: &Path) -> Result<Option<(String, Vec<i32>)>> {
     let filename = path.to_string_lossy().to_string();
 
-    // Get stored fingerprint from database
-    let stored_fp = match db.get_fingerprint_rust(&filename)? {
+    // Get baseline fingerprint (NOT last-run fingerprint!)
+    // This compares against the "known good" state set via --diff-baseline
+    let stored_fp = match db.get_baseline_fingerprint_rust(&filename)? {
         Some(fp) => fp,
         None => {
-            // File not in database - it's new
-            return Ok(Some((filename, vec![])));
+            // No baseline for this file - it's not tracked yet, so no change to detect
+            // Baselines are set when running: pytest --diff-baseline
+            return Ok(None);
         }
     };
 
@@ -180,8 +241,12 @@ fn check_file_changed(
         .duration_since(UNIX_EPOCH)?
         .as_secs_f64();
 
+    // eprintln!("DEBUG: {} - current_mtime: {}, stored_mtime: {}, diff: {}",
+    //           filename, current_mtime, stored_fp.mtime, (current_mtime - stored_fp.mtime).abs());
+
     if (current_mtime - stored_fp.mtime).abs() < 0.001 {
         // mtime unchanged - file definitely not modified
+        // eprintln!("DEBUG: {} - mtime unchanged, skipping", filename);
         return Ok(None);
     }
 
@@ -211,16 +276,20 @@ fn check_file_changed(
     Ok(Some((filename, changed_checksums)))
 }
 
-/// Find which checksums changed by comparing old vs new
+/// Find which OLD checksums were removed/modified (these indicate blocks that changed)
+///
+/// Returns the OLD checksums that are no longer present in the new version.
+/// These are the checksums that tests may have used, so any test that used
+/// these blocks should be re-run to verify the changes.
 fn find_changed_checksums(old_checksums: &[i32], new_checksums: &[i32]) -> Vec<i32> {
-    // Find checksums that are in new but not in old, or vice versa
-    let old_set: std::collections::HashSet<i32> = old_checksums.iter().copied().collect();
     let new_set: std::collections::HashSet<i32> = new_checksums.iter().copied().collect();
 
-    // Return checksums that are different (added or removed)
-    new_set
-        .symmetric_difference(&old_set)
+    // Return OLD checksums that are no longer in the new version
+    // These represent blocks that were removed or modified
+    old_checksums
+        .iter()
         .copied()
+        .filter(|checksum| !new_set.contains(checksum))
         .collect()
 }
 

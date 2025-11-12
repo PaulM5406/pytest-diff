@@ -249,7 +249,9 @@ mod tests {
     fn test_changed_files_has_changes() {
         let changed = ChangedFiles::new(
             vec!["file1.py".to_string()],
-            [(String::from("file1.py"), vec![123, 456])].into_iter().collect(),
+            [(String::from("file1.py"), vec![123, 456])]
+                .into_iter()
+                .collect(),
         );
 
         assert!(changed.has_changes());

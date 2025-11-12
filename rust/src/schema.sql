@@ -67,3 +67,18 @@ CREATE TABLE IF NOT EXISTS suite_execution_file_fsha (
 
 CREATE INDEX IF NOT EXISTS ix_suite_execution_file_fsha_suite
     ON suite_execution_file_fsha(suite_execution_id);
+
+-- Baseline fingerprints (clean state reference)
+-- This table stores the "known good" state that change detection compares against
+-- Set via: pytest --diff-baseline
+CREATE TABLE IF NOT EXISTS baseline_fp (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    filename TEXT NOT NULL UNIQUE,  -- Only one baseline per file
+    method_checksums BLOB NOT NULL,
+    mtime FLOAT NOT NULL,
+    fsha TEXT NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS ix_baseline_fp_filename
+    ON baseline_fp(filename);

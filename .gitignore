@@ -9,6 +9,7 @@ build/
 .venv/
 venv/
 *.egg
+*.so
 
 # Rust
 target/

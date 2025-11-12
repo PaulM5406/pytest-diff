@@ -50,9 +50,9 @@ impl CoverageCollector {
             let mut coverage = self.coverage.lock().unwrap();
             coverage
                 .entry(test_name.clone())
-                .or_insert_with(HashMap::new)
+                .or_default()
                 .entry(filename)
-                .or_insert_with(HashSet::new)
+                .or_default()
                 .insert(line_no);
         }
     }

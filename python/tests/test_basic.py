@@ -2,8 +2,6 @@
 Basic tests for pytest-diff plugin
 """
 
-import pytest
-
 
 def test_plugin_registration(pytestconfig):
     """Test that the plugin can be registered"""

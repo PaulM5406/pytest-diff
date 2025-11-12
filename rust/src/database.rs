@@ -28,7 +28,6 @@ use crate::types::Fingerprint;
 pub struct TestmonDatabase {
     conn: Arc<RwLock<Connection>>,
     cache: Arc<Cache>,
-    db_path: String,
     current_environment_id: Arc<RwLock<Option<i64>>>,
 }
 
@@ -48,8 +47,8 @@ impl TestmonDatabase {
                 .with_context(|| format!("Failed to create directory: {:?}", parent))?;
         }
 
-        let conn = Connection::open(path)
-            .with_context(|| format!("Failed to open database: {}", path))?;
+        let conn =
+            Connection::open(path).with_context(|| format!("Failed to open database: {}", path))?;
 
         // Apply performance optimizations
         conn.execute_batch(
@@ -67,10 +66,10 @@ impl TestmonDatabase {
         // Create schema
         Self::create_schema(&conn)?;
 
+        #[allow(clippy::arc_with_non_send_sync)]
         Ok(Self {
             conn: Arc::new(RwLock::new(conn)),
             cache: Arc::new(Cache::new()),
-            db_path: path.to_string(),
             current_environment_id: Arc::new(RwLock::new(None)),
         })
     }
@@ -127,7 +126,8 @@ impl TestmonDatabase {
         Ok(env_id)
     }
 
-    /// Store or retrieve fingerprint ID
+    /// Store or retrieve fingerprint ID (used in tests)
+    #[cfg(test)]
     fn get_or_create_fingerprint(&self, fp: &Fingerprint) -> Result<i64> {
         let conn = self.conn.write();
 
@@ -163,6 +163,40 @@ impl TestmonDatabase {
     /// Get stored fingerprint for a file (public Rust API)
     pub fn get_fingerprint_rust(&self, filename: &str) -> Result<Option<Fingerprint>> {
         self.get_fingerprint_internal(filename)
+    }
+
+    /// Get baseline fingerprint for a file (public Rust API)
+    pub fn get_baseline_fingerprint_rust(&self, filename: &str) -> Result<Option<Fingerprint>> {
+        self.get_baseline_fingerprint_internal(filename)
+    }
+
+    /// Get stored fingerprint from database, bypassing cache
+    /// This should be used for change detection to ensure we get the latest stored value
+    pub fn get_fingerprint_no_cache(&self, filename: &str) -> Result<Option<Fingerprint>> {
+        let conn = self.conn.read();
+
+        conn.query_row(
+            "SELECT filename, method_checksums, mtime, fsha
+                 FROM file_fp
+                 WHERE filename = ?1
+                 ORDER BY id DESC
+                 LIMIT 1",
+            params![filename],
+            |row| {
+                let checksums_blob: Vec<u8> = row.get(1)?;
+                let checksums = deserialize_checksums(&checksums_blob);
+
+                Ok(Fingerprint {
+                    filename: row.get(0)?,
+                    checksums,
+                    mtime: row.get(2)?,
+                    file_hash: row.get(3)?,
+                    blocks: None,
+                })
+            },
+        )
+        .optional()
+        .context("Failed to query fingerprint")
     }
 
     /// Get stored fingerprint for a file (if exists)
@@ -263,10 +297,7 @@ impl TestmonDatabase {
     /// Get stored fingerprint for a file
     fn get_fingerprint(&self, filename: &str) -> PyResult<Option<Fingerprint>> {
         self.get_fingerprint_internal(filename).map_err(|e| {
-            pyo3::exceptions::PyRuntimeError::new_err(format!(
-                "Failed to get fingerprint: {}",
-                e
-            ))
+            pyo3::exceptions::PyRuntimeError::new_err(format!("Failed to get fingerprint: {}", e))
         })
     }
 
@@ -287,6 +318,44 @@ impl TestmonDatabase {
         self.get_stats_internal().map_err(|e| {
             pyo3::exceptions::PyRuntimeError::new_err(format!("Failed to get stats: {}", e))
         })
+    }
+
+    /// Save baseline fingerprint for a file
+    ///
+    /// This stores the "known good" state that change detection compares against.
+    /// Replaces any existing baseline for the file.
+    fn save_baseline_fingerprint(&mut self, fingerprint: Fingerprint) -> PyResult<()> {
+        self.save_baseline_fingerprint_internal(fingerprint)
+            .map_err(|e| {
+                pyo3::exceptions::PyRuntimeError::new_err(format!(
+                    "Failed to save baseline fingerprint: {}",
+                    e
+                ))
+            })
+    }
+
+    /// Get baseline fingerprint for a file
+    fn get_baseline_fingerprint(&self, filename: &str) -> PyResult<Option<Fingerprint>> {
+        self.get_baseline_fingerprint_internal(filename)
+            .map_err(|e| {
+                pyo3::exceptions::PyRuntimeError::new_err(format!(
+                    "Failed to get baseline fingerprint: {}",
+                    e
+                ))
+            })
+    }
+
+    /// Clear all baseline fingerprints
+    fn clear_baseline(&mut self) -> PyResult<()> {
+        let conn = self.conn.write();
+        conn.execute("DELETE FROM baseline_fp", [])
+            .map_err(|e| {
+                pyo3::exceptions::PyRuntimeError::new_err(format!(
+                    "Failed to clear baseline: {}",
+                    e
+                ))
+            })?;
+        Ok(())
     }
 }
 
@@ -349,14 +418,17 @@ impl TestmonDatabase {
             .optional()?;
 
         if let Some(id) = existing_id {
+            // Exact match found - reuse it
             Ok(id)
         } else {
+            // No exact match - insert new fingerprint
+            // We always insert new fingerprints to maintain history
+            // Change detection relies on comparing current state vs stored state
             tx.execute(
                 "INSERT INTO file_fp (filename, method_checksums, mtime, fsha)
                  VALUES (?1, ?2, ?3, ?4)",
                 params![&fp.filename, checksums_blob, fp.mtime, &fp.file_hash],
             )?;
-
             Ok(tx.last_insert_rowid())
         }
     }
@@ -372,10 +444,10 @@ impl TestmonDatabase {
         let conn = self.conn.read();
         let mut all_tests = Vec::new();
 
-        for (filename, _checksums) in changed_blocks {
-            // Get all fingerprints for this file
+        for (filename, checksums) in changed_blocks {
+            // Get all fingerprints for this file along with their checksums
             let mut stmt = conn.prepare(
-                "SELECT DISTINCT te.test_name
+                "SELECT DISTINCT te.test_name, fp.method_checksums
                  FROM test_execution te
                  JOIN test_execution_file_fp teff ON te.id = teff.test_execution_id
                  JOIN file_fp fp ON teff.fingerprint_id = fp.id
@@ -383,11 +455,21 @@ impl TestmonDatabase {
             )?;
 
             let tests: Vec<String> = stmt
-                .query_map(params![filename], |row| row.get(0))?
+                .query_map(params![filename], |row| {
+                    let test_name: String = row.get(0)?;
+                    let blob: Vec<u8> = row.get(1)?;
+                    Ok((test_name, blob))
+                })?
                 .filter_map(|r| r.ok())
+                .filter(|(_, blob)| {
+                    // Deserialize the checksums and check if any match
+                    let file_checksums = deserialize_checksums(blob);
+                    // If any of the changed checksums are in this file's checksums, include the test
+                    checksums.iter().any(|c| file_checksums.contains(c))
+                })
+                .map(|(test_name, _)| test_name)
                 .collect();
 
-            // TODO: Filter by specific checksums (requires deserializing blobs)
             all_tests.extend(tests);
         }
 
@@ -403,9 +485,8 @@ impl TestmonDatabase {
         let mut stats = HashMap::new();
 
         // Count tests
-        let test_count: i64 = conn.query_row("SELECT COUNT(*) FROM test_execution", [], |row| {
-            row.get(0)
-        })?;
+        let test_count: i64 =
+            conn.query_row("SELECT COUNT(*) FROM test_execution", [], |row| row.get(0))?;
         stats.insert("test_count".to_string(), test_count);
 
         // Count files
@@ -419,16 +500,58 @@ impl TestmonDatabase {
         let fp_count: i64 = conn.query_row("SELECT COUNT(*) FROM file_fp", [], |row| row.get(0))?;
         stats.insert("fingerprint_count".to_string(), fp_count);
 
+        // Count baselines
+        let baseline_count: i64 =
+            conn.query_row("SELECT COUNT(*) FROM baseline_fp", [], |row| row.get(0))?;
+        stats.insert("baseline_count".to_string(), baseline_count);
+
         Ok(stats)
+    }
+
+    pub fn save_baseline_fingerprint_internal(&mut self, fp: Fingerprint) -> Result<()> {
+        let conn = self.conn.write();
+        let checksums_blob = serialize_checksums(&fp.checksums);
+
+        // Use INSERT OR REPLACE to update existing baseline
+        conn.execute(
+            "INSERT OR REPLACE INTO baseline_fp (filename, method_checksums, mtime, fsha)
+             VALUES (?1, ?2, ?3, ?4)",
+            params![&fp.filename, checksums_blob, fp.mtime, &fp.file_hash],
+        )
+        .context("Failed to save baseline fingerprint")?;
+
+        Ok(())
+    }
+
+    fn get_baseline_fingerprint_internal(&self, filename: &str) -> Result<Option<Fingerprint>> {
+        let conn = self.conn.read();
+
+        conn.query_row(
+            "SELECT filename, method_checksums, mtime, fsha
+             FROM baseline_fp
+             WHERE filename = ?1",
+            params![filename],
+            |row| {
+                let checksums_blob: Vec<u8> = row.get(1)?;
+                let checksums = deserialize_checksums(&checksums_blob);
+
+                Ok(Fingerprint {
+                    filename: row.get(0)?,
+                    checksums,
+                    mtime: row.get(2)?,
+                    file_hash: row.get(3)?,
+                    blocks: None,
+                })
+            },
+        )
+        .optional()
+        .context("Failed to query baseline fingerprint")
     }
 }
 
 /// Serialize checksums (Vec<i32>) to blob
 fn serialize_checksums(checksums: &[i32]) -> Vec<u8> {
-    checksums
-        .iter()
-        .flat_map(|c| c.to_le_bytes())
-        .collect()
+    checksums.iter().flat_map(|c| c.to_le_bytes()).collect()
 }
 
 /// Deserialize checksums from blob to Vec<i32>

@@ -8,22 +8,22 @@
 
 use pyo3::prelude::*;
 
-mod types;
-mod parser;
-mod fingerprint;
-mod database;
-mod tracer;
 mod cache;
+mod database;
+mod fingerprint;
+mod parser;
+mod tracer;
+mod types;
 
-pub use types::{Block, Fingerprint, ChangedFiles, TestExecution};
-pub use parser::parse_module;
-pub use fingerprint::{calculate_fingerprint, detect_changes};
 pub use database::TestmonDatabase;
+pub use fingerprint::{calculate_fingerprint, detect_changes, save_baseline};
+pub use parser::parse_module;
 pub use tracer::CoverageCollector;
+pub use types::{Block, ChangedFiles, Fingerprint, TestExecution};
 
 /// Python module initialization
 #[pymodule]
-fn _core(_py: Python, m: &PyModule) -> PyResult<()> {
+fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // Register types
     m.add_class::<Block>()?;
     m.add_class::<Fingerprint>()?;
@@ -36,6 +36,7 @@ fn _core(_py: Python, m: &PyModule) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(parse_module, m)?)?;
     m.add_function(wrap_pyfunction!(calculate_fingerprint, m)?)?;
     m.add_function(wrap_pyfunction!(detect_changes, m)?)?;
+    m.add_function(wrap_pyfunction!(save_baseline, m)?)?;
 
     // Module metadata
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;

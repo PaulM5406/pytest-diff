@@ -49,11 +49,13 @@ impl Cache {
     }
 
     /// Get test mapping from cache
+    #[allow(dead_code)]
     pub fn get_test_mapping(&self, test_name: &str) -> Option<Vec<i32>> {
         self.test_mappings.get(test_name).map(|v| v.clone())
     }
 
     /// Insert test mapping into cache
+    #[allow(dead_code)]
     pub fn insert_test_mapping(&self, test_name: String, checksums: Vec<i32>) {
         self.test_mappings.insert(test_name, checksums);
     }

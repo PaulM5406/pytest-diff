@@ -36,8 +36,8 @@ pub fn parse_module(source: &str) -> PyResult<Vec<Block>> {
 /// Internal implementation that returns anyhow::Result
 fn parse_module_internal(source: &str) -> Result<Vec<Block>> {
     // Parse the source code with RustPython's parser
-    let parsed = ast::Suite::parse(source, "<string>")
-        .map_err(|e| anyhow::anyhow!("Parse error: {}", e))?;
+    let parsed =
+        ast::Suite::parse(source, "<string>").map_err(|e| anyhow::anyhow!("Parse error: {}", e))?;
 
     let mut blocks = Vec::new();
 
@@ -52,11 +52,8 @@ fn parse_module_internal(source: &str) -> Result<Vec<Block>> {
         block_type: "module".to_string(),
     });
 
-    // Create a locator to convert TextRange to line numbers
-    let mut locator = LinearLocator::new(source);
-
-    // Extract blocks from AST
-    extract_blocks_from_statements(&parsed, source, &mut locator, &mut blocks)?;
+    // Extract blocks from AST (we'll create locators as needed)
+    extract_blocks_from_statements(&parsed, source, &mut blocks)?;
 
     Ok(blocks)
 }
@@ -65,11 +62,10 @@ fn parse_module_internal(source: &str) -> Result<Vec<Block>> {
 fn extract_blocks_from_statements(
     statements: &[ast::Stmt],
     source: &str,
-    locator: &mut LinearLocator,
     blocks: &mut Vec<Block>,
 ) -> Result<()> {
     for stmt in statements {
-        extract_block_from_statement(stmt, source, locator, blocks)?;
+        extract_block_from_statement(stmt, source, blocks)?;
     }
     Ok(())
 }
@@ -78,15 +74,14 @@ fn extract_blocks_from_statements(
 fn extract_block_from_statement(
     stmt: &ast::Stmt,
     source: &str,
-    locator: &mut LinearLocator,
     blocks: &mut Vec<Block>,
 ) -> Result<()> {
     use ast::Ranged; // Import trait to use range() method
 
     match stmt {
         ast::Stmt::FunctionDef(func_def) => {
-            let start = get_line_number(locator, stmt.start());
-            let end = get_line_number(locator, stmt.end());
+            let start = get_line_number(source, stmt.start());
+            let end = get_line_number(source, stmt.end());
 
             // Extract the source for this function
             let block_source = extract_source_lines(source, start, end)?;
@@ -101,11 +96,11 @@ fn extract_block_from_statement(
             });
 
             // Extract nested blocks
-            extract_blocks_from_statements(&func_def.body, source, locator, blocks)?;
+            extract_blocks_from_statements(&func_def.body, source, blocks)?;
         }
         ast::Stmt::AsyncFunctionDef(async_func_def) => {
-            let start = get_line_number(locator, stmt.start());
-            let end = get_line_number(locator, stmt.end());
+            let start = get_line_number(source, stmt.start());
+            let end = get_line_number(source, stmt.end());
 
             let block_source = extract_source_lines(source, start, end)?;
             let checksum = calculate_checksum(&block_source);
@@ -118,11 +113,11 @@ fn extract_block_from_statement(
                 block_type: "async_function".to_string(),
             });
 
-            extract_blocks_from_statements(&async_func_def.body, source, locator, blocks)?;
+            extract_blocks_from_statements(&async_func_def.body, source, blocks)?;
         }
         ast::Stmt::ClassDef(class_def) => {
-            let start = get_line_number(locator, stmt.start());
-            let end = get_line_number(locator, stmt.end());
+            let start = get_line_number(source, stmt.start());
+            let end = get_line_number(source, stmt.end());
 
             let block_source = extract_source_lines(source, start, end)?;
             let checksum = calculate_checksum(&block_source);
@@ -135,35 +130,35 @@ fn extract_block_from_statement(
                 block_type: "class".to_string(),
             });
 
-            extract_blocks_from_statements(&class_def.body, source, locator, blocks)?;
+            extract_blocks_from_statements(&class_def.body, source, blocks)?;
         }
         // Handle other statement types that may contain nested blocks
         ast::Stmt::If(if_stmt) => {
-            extract_blocks_from_statements(&if_stmt.body, source, locator, blocks)?;
-            extract_blocks_from_statements(&if_stmt.orelse, source, locator, blocks)?;
+            extract_blocks_from_statements(&if_stmt.body, source, blocks)?;
+            extract_blocks_from_statements(&if_stmt.orelse, source, blocks)?;
         }
         ast::Stmt::For(for_stmt) => {
-            extract_blocks_from_statements(&for_stmt.body, source, locator, blocks)?;
-            extract_blocks_from_statements(&for_stmt.orelse, source, locator, blocks)?;
+            extract_blocks_from_statements(&for_stmt.body, source, blocks)?;
+            extract_blocks_from_statements(&for_stmt.orelse, source, blocks)?;
         }
         ast::Stmt::While(while_stmt) => {
-            extract_blocks_from_statements(&while_stmt.body, source, locator, blocks)?;
-            extract_blocks_from_statements(&while_stmt.orelse, source, locator, blocks)?;
+            extract_blocks_from_statements(&while_stmt.body, source, blocks)?;
+            extract_blocks_from_statements(&while_stmt.orelse, source, blocks)?;
         }
         ast::Stmt::With(with_stmt) => {
-            extract_blocks_from_statements(&with_stmt.body, source, locator, blocks)?;
+            extract_blocks_from_statements(&with_stmt.body, source, blocks)?;
         }
         ast::Stmt::Try(try_stmt) => {
-            extract_blocks_from_statements(&try_stmt.body, source, locator, blocks)?;
+            extract_blocks_from_statements(&try_stmt.body, source, blocks)?;
             for handler in &try_stmt.handlers {
                 match handler {
                     ast::ExceptHandler::ExceptHandler(h) => {
-                        extract_blocks_from_statements(&h.body, source, locator, blocks)?;
+                        extract_blocks_from_statements(&h.body, source, blocks)?;
                     }
                 }
             }
-            extract_blocks_from_statements(&try_stmt.orelse, source, locator, blocks)?;
-            extract_blocks_from_statements(&try_stmt.finalbody, source, locator, blocks)?;
+            extract_blocks_from_statements(&try_stmt.orelse, source, blocks)?;
+            extract_blocks_from_statements(&try_stmt.finalbody, source, blocks)?;
         }
         _ => {}
     }
@@ -171,9 +166,14 @@ fn extract_block_from_statement(
 }
 
 /// Convert TextSize to 1-indexed line number
-fn get_line_number(locator: &mut LinearLocator, offset: rustpython_parser_core::text_size::TextSize) -> usize {
+fn get_line_number(
+    source: &str,
+    offset: rustpython_parser_core::text_size::TextSize,
+) -> usize {
+    // Create a fresh locator for each lookup to avoid state issues
+    let mut locator = LinearLocator::new(source);
     let location = locator.locate(offset);
-    location.row.get() as usize  // Convert OneIndexed u32 to usize
+    location.row.get() as usize // Convert OneIndexed u32 to usize
 }
 
 /// Extract source lines from start to end (inclusive, 1-indexed)
@@ -233,9 +233,15 @@ class Calculator:
 
         // Should have: module + class + 2 methods
         assert!(blocks.len() >= 4);
-        assert!(blocks.iter().any(|b| b.name == "Calculator" && b.block_type == "class"));
-        assert!(blocks.iter().any(|b| b.name == "add" && b.block_type == "function"));
-        assert!(blocks.iter().any(|b| b.name == "subtract" && b.block_type == "function"));
+        assert!(blocks
+            .iter()
+            .any(|b| b.name == "Calculator" && b.block_type == "class"));
+        assert!(blocks
+            .iter()
+            .any(|b| b.name == "add" && b.block_type == "function"));
+        assert!(blocks
+            .iter()
+            .any(|b| b.name == "subtract" && b.block_type == "function"));
     }
 
     #[test]

@@ -33,6 +33,97 @@ pub fn parse_module(source: &str) -> PyResult<Vec<Block>> {
     Ok(blocks)
 }
 
+/// Extract module-level skeleton (excludes function/class bodies)
+///
+/// This creates a simplified version of the source that includes:
+/// - Imports
+/// - Module docstrings
+/// - Module-level constants/assignments
+/// - Function/class signatures (but not their bodies)
+///
+/// This ensures the module checksum only changes when module-level code changes,
+/// not when individual function implementations change.
+fn extract_module_skeleton(source: &str, parsed: &[ast::Stmt]) -> Result<String> {
+    use ast::Ranged;
+
+    let source_lines: Vec<&str> = source.lines().collect();
+    let mut skeleton_parts = Vec::new();
+
+    for stmt in parsed {
+        match stmt {
+            // Function definitions: include signature only
+            ast::Stmt::FunctionDef(_func_def) => {
+                let start = get_line_number(source, stmt.start());
+                let end = get_line_number(source, stmt.end());
+
+                // Extract just the def line(s) - everything up to the colon
+                if start <= source_lines.len() {
+                    let mut def_lines = Vec::new();
+                    let range_end = end.min(source_lines.len());
+                    for line in &source_lines[(start - 1)..range_end] {
+                        def_lines.push(*line);
+                        // Stop after the line with the colon
+                        if line.trim_end().ends_with(':') {
+                            break;
+                        }
+                    }
+                    skeleton_parts.push(def_lines.join("\n"));
+                }
+            }
+
+            // Async function definitions: include signature only
+            ast::Stmt::AsyncFunctionDef(_async_func_def) => {
+                let start = get_line_number(source, stmt.start());
+                let end = get_line_number(source, stmt.end());
+
+                if start <= source_lines.len() {
+                    let mut def_lines = Vec::new();
+                    let range_end = end.min(source_lines.len());
+                    for line in &source_lines[(start - 1)..range_end] {
+                        def_lines.push(*line);
+                        if line.trim_end().ends_with(':') {
+                            break;
+                        }
+                    }
+                    skeleton_parts.push(def_lines.join("\n"));
+                }
+            }
+
+            // Class definitions: include signature only
+            ast::Stmt::ClassDef(_class_def) => {
+                let start = get_line_number(source, stmt.start());
+                let end = get_line_number(source, stmt.end());
+
+                if start <= source_lines.len() {
+                    let mut def_lines = Vec::new();
+                    let range_end = end.min(source_lines.len());
+                    for line in &source_lines[(start - 1)..range_end] {
+                        def_lines.push(*line);
+                        if line.trim_end().ends_with(':') {
+                            break;
+                        }
+                    }
+                    skeleton_parts.push(def_lines.join("\n"));
+                }
+            }
+
+            // All other statements: include completely
+            // This includes: imports, assignments, expressions, etc.
+            _ => {
+                let start = get_line_number(source, stmt.start());
+                let end = get_line_number(source, stmt.end());
+
+                if start <= source_lines.len() {
+                    let stmt_source = extract_source_lines(source, start, end)?;
+                    skeleton_parts.push(stmt_source);
+                }
+            }
+        }
+    }
+
+    Ok(skeleton_parts.join("\n"))
+}
+
 /// Internal implementation that returns anyhow::Result
 fn parse_module_internal(source: &str) -> Result<Vec<Block>> {
     // Parse the source code with RustPython's parser
@@ -41,8 +132,10 @@ fn parse_module_internal(source: &str) -> Result<Vec<Block>> {
 
     let mut blocks = Vec::new();
 
-    // Add module-level block (entire file)
-    let module_checksum = calculate_checksum(source);
+    // Add module-level block (skeleton only - excludes function/class bodies)
+    // This ensures that changing a function body doesn't invalidate the module checksum
+    let module_skeleton = extract_module_skeleton(source, &parsed)?;
+    let module_checksum = calculate_checksum(&module_skeleton);
     let line_count = source.lines().count();
     blocks.push(Block {
         start_line: 1,

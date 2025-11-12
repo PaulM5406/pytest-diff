@@ -523,6 +523,33 @@ impl TestmonDatabase {
         Ok(())
     }
 
+    /// Batch save multiple baseline fingerprints in a single transaction
+    pub fn save_baseline_fingerprints_batch(&mut self, fingerprints: Vec<Fingerprint>) -> Result<usize> {
+        let mut conn = self.conn.write();
+
+        // Start transaction
+        let tx = conn.transaction()?;
+
+        let mut count = 0;
+        for fp in fingerprints {
+            let checksums_blob = serialize_checksums(&fp.checksums);
+
+            tx.execute(
+                "INSERT OR REPLACE INTO baseline_fp (filename, method_checksums, mtime, fsha)
+                 VALUES (?1, ?2, ?3, ?4)",
+                params![&fp.filename, checksums_blob, fp.mtime, &fp.file_hash],
+            )
+            .context("Failed to save baseline fingerprint in batch")?;
+
+            count += 1;
+        }
+
+        // Commit transaction
+        tx.commit()?;
+
+        Ok(count)
+    }
+
     fn get_baseline_fingerprint_internal(&self, filename: &str) -> Result<Option<Fingerprint>> {
         let conn = self.conn.read();
 

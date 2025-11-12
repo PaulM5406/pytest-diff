@@ -27,6 +27,7 @@ class TestmonPlugin:
         self.config = config
         self.baseline = config.getoption("--diff-baseline", False)
         self.enabled = config.getoption("--diff", False) or self.baseline
+        self.verbose = config.getoption("--diff-v", False)
 
         if not self.enabled:
             return
@@ -40,10 +41,67 @@ class TestmonPlugin:
         self.db_path = Path(config.rootdir) / ".testmondata"
         self.db = None
         self.cov = None
+        self.fp_cache = None  # Fingerprint cache for avoiding re-parsing
         self.deselected_items = []
         self.current_test = None
         self.test_start_time = None
         self.test_files_executed = []
+
+        # Batch writing for test executions
+        self.test_execution_batch = []
+        # Adaptive batch size based on total test count
+        # For large test suites, larger batches = better performance
+        self.batch_size = config.getoption("--diff-batch-size", 20)
+
+        # Get pytest invocation scope (e.g., if user runs 'pytest tests/unit/')
+        # We'll use this to only track files within the specified scope
+        self.scope_paths = self._get_scope_paths(config)
+
+    def _log(self, message):
+        """Log verbose message with timestamp"""
+        if self.verbose:
+            import time
+            timestamp = time.strftime("%H:%M:%S")
+            print(f"[{timestamp}] pytest-diff: {message}")
+
+    def _get_scope_paths(self, config):
+        """Get the absolute paths that define the pytest invocation scope.
+
+        If user runs 'pytest tests/unit/', we should only track files under tests/unit/.
+        If no args provided, track the entire rootdir.
+        """
+        if not config.args:
+            # No specific paths given, use rootdir
+            return [str(Path(config.rootdir).resolve())]
+
+        scope_paths = []
+        for arg in config.args:
+            # Resolve to absolute path
+            path = Path(arg)
+            if not path.is_absolute():
+                path = Path(config.rootdir) / path
+
+            # Handle both files and directories
+            resolved = path.resolve()
+            if resolved.is_dir():
+                scope_paths.append(str(resolved))
+            elif resolved.is_file():
+                # For files, use their parent directory as scope
+                scope_paths.append(str(resolved.parent))
+
+        return scope_paths if scope_paths else [str(Path(config.rootdir).resolve())]
+
+    def _flush_test_batch(self):
+        """Flush batched test executions to database"""
+        if not self.test_execution_batch:
+            return
+
+        import time
+        flush_start = time.time()
+        for nodeid, fingerprints, duration, failed in self.test_execution_batch:
+            self.db.save_test_execution(nodeid, fingerprints, duration, failed)
+        self._log(f"Flushed {len(self.test_execution_batch)} test executions to DB in {time.time() - flush_start:.3f}s")
+        self.test_execution_batch = []
 
     def pytest_configure(self, config):
         """Initialize database and coverage collector"""
@@ -53,14 +111,27 @@ class TestmonPlugin:
         if not self.enabled:
             return
 
+        import time
+        start = time.time()
+        self._log("Starting pytest_configure")
+
         # Initialize Rust components
         try:
+            db_start = time.time()
             self.db = _core.TestmonDatabase(str(self.db_path))
+            self._log(f"Database opened in {time.time() - db_start:.3f}s")
             print(f"✓ pytest-diff: Using database at {self.db_path}")
         except Exception as e:
             print(f"⚠ pytest-diff: Could not open database: {e}")
             print(f"  Creating new database at {self.db_path}")
+            db_start = time.time()
             self.db = _core.TestmonDatabase(str(self.db_path))
+            self._log(f"Database created in {time.time() - db_start:.3f}s")
+
+        # Initialize fingerprint cache
+        cache_start = time.time()
+        self.fp_cache = _core.FingerprintCache()
+        self._log(f"Fingerprint cache initialized in {time.time() - cache_start:.3f}s")
 
         # Initialize coverage if available
         coverage_module = None
@@ -73,14 +144,18 @@ class TestmonPlugin:
             print(f"[DEBUG] Coverage module available: {coverage_module is not None}")
 
         if coverage_module:
+            cov_start = time.time()
             self.cov = coverage_module.Coverage(
                 data_file=None,  # Don't save coverage data
                 branch=False,
                 config_file=False,
                 source=[str(config.rootdir)],
             )
+            self._log(f"Coverage initialized in {time.time() - cov_start:.3f}s")
             if config.option.verbose >= 2:
                 print("[DEBUG] Coverage initialized successfully")
+
+        self._log(f"pytest_configure completed in {time.time() - start:.3f}s")
 
     def pytest_collection_modifyitems(self, config, items):
         """Select tests based on code changes"""
@@ -92,7 +167,7 @@ class TestmonPlugin:
 
         try:
             # Detect changes
-            changed = _core.detect_changes(str(self.db_path), str(config.rootdir))
+            changed = _core.detect_changes(str(self.db_path), str(config.rootdir), self.scope_paths)
 
             if changed.has_changes():
                 print(f"\n✓ pytest-diff: Detected {len(changed.modified)} modified files")
@@ -158,6 +233,7 @@ class TestmonPlugin:
 
         import time
 
+        report_start = time.time()
         duration = time.time() - (self.test_start_time or time.time())
         failed = call.excinfo is not None
 
@@ -167,48 +243,82 @@ class TestmonPlugin:
             seen_files = set()
 
             if self.cov:
+                cov_stop_start = time.time()
                 self.cov.stop()
                 data = self.cov.get_data()
+                self._log(f"Coverage stop took {time.time() - cov_stop_start:.3f}s")
 
                 # Debug: log how many files coverage found
                 measured = list(data.measured_files())
+                self._log(f"Coverage measured {len(measured)} files")
                 if self.config.option.verbose >= 2:
                     print(f"\n[DEBUG] Coverage measured {len(measured)} files")
                     for f in measured[:5]:
                         print(f"  - {f}")
 
-                # Get all .py files that were executed
+                # Get test file path for filtering
+                test_file = Path(item.fspath).resolve()
+                test_file_str = str(test_file)
+
+                # Extract coverage data as dict: filename -> list of executed lines
+                # This is the only Python-specific part; Rust does the rest!
+                extract_start = time.time()
+                coverage_map = {}
                 for filename in measured:
                     filepath = Path(filename)
-                    # Include project files (source and tests)
-                    if filepath.suffix == ".py" and str(filepath).startswith(
-                        str(self.config.rootdir)
-                    ):
+                    # Basic filtering: only .py files in project
+                    if filepath.suffix == ".py" and str(filepath).startswith(str(self.config.rootdir)):
                         abs_path = str(filepath.resolve())
-                        if abs_path not in seen_files:
-                            seen_files.add(abs_path)
-                            try:
-                                fp = _core.calculate_fingerprint(abs_path)
-                                fingerprints.append(fp)
-                            except Exception as e:
-                                # Skip files that can't be fingerprinted, but log in verbose mode
-                                if self.config.option.verbose:
-                                    print(f"\n⚠ pytest-diff: Could not fingerprint {abs_path}: {e}")
+                        executed_lines = list(data.lines(filename))
+                        coverage_map[abs_path] = executed_lines
+                self._log(f"Extracted coverage for {len(coverage_map)} files in {time.time() - extract_start:.3f}s")
 
-                self.cov.erase()  # Clear coverage data for next test
-
-            # Always include the test file itself
-            test_file = Path(item.fspath).resolve()
-            test_file_str = str(test_file)
-            if test_file_str not in seen_files and test_file.exists() and test_file.suffix == ".py":
+                # Let Rust do the heavy lifting in parallel!
+                # This handles:
+                # - File filtering (test files, etc.)
+                # - Fingerprint calculation
+                # - Block filtering by executed lines
+                # - All done concurrently with rayon
                 try:
-                    fingerprints.append(_core.calculate_fingerprint(test_file_str))
-                except Exception:
-                    pass
+                    process_start = time.time()
+                    fingerprints = _core.process_coverage_data(
+                        coverage_map,
+                        str(self.config.rootdir),
+                        test_file_str,
+                        self.config.option.verbose >= 2 or self.verbose,
+                        self.scope_paths,
+                        self.fp_cache  # Use cache to avoid re-parsing
+                    )
+                    self._log(f"Rust processing took {time.time() - process_start:.3f}s, got {len(fingerprints)} fingerprints")
+                except Exception as e:
+                    if self.config.option.verbose:
+                        print(f"\n⚠ pytest-diff: Error processing coverage: {e}")
+                        import traceback
+                        traceback.print_exc()
 
-            # Save test execution
+                erase_start = time.time()
+                self.cov.erase()  # Clear coverage data for next test
+                self._log(f"Coverage erase took {time.time() - erase_start:.3f}s")
+            else:
+                # If no coverage, still track the test file itself
+                test_file = Path(item.fspath).resolve()
+                test_file_str = str(test_file)
+                if test_file_str not in seen_files and test_file.exists() and test_file.suffix == ".py":
+                    try:
+                        fingerprints.append(_core.calculate_fingerprint(test_file_str))
+                    except Exception:
+                        pass
+
+            # Add to batch instead of saving immediately
             if fingerprints:
-                self.db.save_test_execution(item.nodeid, fingerprints, duration, failed)
+                self.test_execution_batch.append((item.nodeid, fingerprints, duration, failed))
+                self._log(f"Added to batch (size: {len(self.test_execution_batch)})")
+
+                # Flush batch if it reaches batch_size
+                if len(self.test_execution_batch) >= self.batch_size:
+                    self._flush_test_batch()
+
+            self._log(f"Total report handling took {time.time() - report_start:.3f}s")
         except Exception as e:
             # Don't fail the test run if we can't save to database
             if self.config.option.verbose:
@@ -219,13 +329,27 @@ class TestmonPlugin:
         if not self.enabled:
             return
 
+        # Flush any remaining batched test executions
+        self._flush_test_batch()
+
+        # Show cache statistics
+        if self.fp_cache and self.verbose:
+            hits, misses, hit_rate = self.fp_cache.stats()
+            cache_size = self.fp_cache.size()
+            self._log(f"Fingerprint cache stats: {hits} hits, {misses} misses, {hit_rate*100:.1f}% hit rate, {cache_size} cached files")
+
         # If baseline mode, save baseline fingerprints
         if self.baseline:
             try:
-                count = _core.save_baseline(str(self.db_path), str(self.config.rootdir))
+                import time
+                self._log("Starting baseline save")
+                start = time.time()
+                count = _core.save_baseline(str(self.db_path), str(self.config.rootdir), self.verbose, self.scope_paths)
+                elapsed = time.time() - start
+                self._log(f"Baseline save completed in {elapsed:.3f}s")
                 terminalreporter.write_sep(
                     "=",
-                    f"pytest-diff: Baseline saved for {count} files",
+                    f"pytest-diff: Baseline saved for {count} files in {elapsed:.3f}s",
                     green=True,
                 )
             except Exception as e:
@@ -260,11 +384,17 @@ def pytest_addoption(parser):
         help="Run all tests and save current state as baseline for change detection",
     )
 
-    parser.addini(
-        "diff_ignore_patterns",
-        type="linelist",
-        help="List of file patterns to ignore",
-        default=[],
+    group.addoption(
+        "--diff-v",
+        action="store_true",
+        help="Enable verbose logging for pytest-diff (shows timing and debug info)",
+    )
+
+    group.addoption(
+        "--diff-batch-size",
+        type=int,
+        default=20,
+        help="Number of test executions to batch before DB write (default: 20, larger = faster but more memory)",
     )
 
 

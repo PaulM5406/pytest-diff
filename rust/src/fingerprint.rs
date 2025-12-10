@@ -109,19 +109,29 @@ fn save_baseline_internal(db_path: &str, project_root: &str, verbose: bool, scop
         eprintln!("[rust] Found {} Python files in {:.3}s", python_files.len(), find_start.elapsed().as_secs_f64());
     }
 
+    // Load ALL existing baselines in a single query (much faster than N queries)
+    let baseline_start = Instant::now();
+    let existing_baselines = db.get_all_baseline_fingerprints()?;
+
+    if verbose {
+        eprintln!("[rust] Loaded {} existing baselines in {:.3}s (single query)",
+                 existing_baselines.len(), baseline_start.elapsed().as_secs_f64());
+    }
+
     let processing_start = Instant::now();
     let total_files = python_files.len();
 
-    // Progress counter for parallel processing
+    // Progress counters for parallel processing
     let progress_counter = Arc::new(AtomicUsize::new(0));
+    let skipped_unchanged = Arc::new(AtomicUsize::new(0));
 
     if verbose {
-        eprintln!("[rust] Calculating fingerprints in parallel...");
+        eprintln!("[rust] Calculating fingerprints in parallel (incremental)...");
     }
 
-    // PARALLEL: Calculate fingerprints for all files concurrently
+    // PARALLEL: Calculate fingerprints, skipping unchanged files
     let fp_calc_start = Instant::now();
-    let fingerprints: Vec<(String, Result<Fingerprint>)> = python_files
+    let fingerprints: Vec<(String, Option<Fingerprint>)> = python_files
         .par_iter()
         .map(|path| {
             let path_str = path.to_string_lossy().to_string();
@@ -130,11 +140,26 @@ fn save_baseline_internal(db_path: &str, project_root: &str, verbose: bool, scop
             if verbose {
                 let count = progress_counter.fetch_add(1, Ordering::Relaxed) + 1;
                 if count % 50 == 0 {
-                    eprintln!("[rust] Fingerprinted {}/{} files ({:.1}%)",
+                    eprintln!("[rust] Processed {}/{} files ({:.1}%)",
                              count, total_files, count as f64 / total_files as f64 * 100.0);
                 }
             }
 
+            // Check if we can skip this file (hash unchanged)
+            if let Some(existing) = existing_baselines.get(&path_str) {
+                // Compute Blake3 hash (cheap: ~1ms for typical file)
+                if let Ok(content) = std::fs::read_to_string(path) {
+                    let current_hash = blake3::hash(content.as_bytes()).to_hex().to_string();
+
+                    if current_hash == existing.file_hash {
+                        // Hash matches - file content unchanged, skip expensive AST parsing
+                        skipped_unchanged.fetch_add(1, Ordering::Relaxed);
+                        return (path_str, None); // None means "keep existing"
+                    }
+                }
+            }
+
+            // File is new or changed - compute full fingerprint
             let fp_start = Instant::now();
             let result = calculate_fingerprint_internal(&path_str);
 
@@ -145,43 +170,57 @@ fn save_baseline_internal(db_path: &str, project_root: &str, verbose: bool, scop
                          fp_start.elapsed().as_secs_f64());
             }
 
-            (path_str, result)
+            match result {
+                Ok(fp) => (path_str, Some(fp)),
+                Err(e) => {
+                    if verbose {
+                        eprintln!("[rust]   Skipping {}: {}", path_str, e);
+                    }
+                    (path_str, None)
+                }
+            }
         })
         .collect();
 
+    let unchanged_count = skipped_unchanged.load(Ordering::Relaxed);
     if verbose {
-        eprintln!("[rust] Fingerprinted {} files in {:.3}s (parallel)",
-                 total_files, fp_calc_start.elapsed().as_secs_f64());
+        eprintln!("[rust] Processed {} files in {:.3}s ({} unchanged, {} need update)",
+                 total_files, fp_calc_start.elapsed().as_secs_f64(),
+                 unchanged_count, total_files - unchanged_count);
     }
 
-    // SEQUENTIAL: Save to database using batch insert (much faster!)
+    // SEQUENTIAL: Save only changed fingerprints to database
     let db_save_start = Instant::now();
-    let mut valid_fingerprints = Vec::new();
-    let mut skipped = 0;
+    let mut fingerprints_to_save = Vec::new();
 
-    for (path_str, result) in fingerprints {
-        match result {
-            Ok(fp) => {
-                valid_fingerprints.push(fp);
-            }
-            Err(e) => {
-                if verbose {
-                    eprintln!("[rust]   Skipping {}: {}", path_str, e);
-                }
-                skipped += 1;
-            }
+    for (_path_str, maybe_fp) in fingerprints {
+        if let Some(fp) = maybe_fp {
+            fingerprints_to_save.push(fp);
         }
+        // If None and we have existing baseline, it's already in DB (unchanged)
+        // If None and no existing baseline, it was an error (already logged)
     }
 
-    let count = db.save_baseline_fingerprints_batch(valid_fingerprints)?;
+    let changed_count = fingerprints_to_save.len();
+    let count = if changed_count > 0 {
+        db.save_baseline_fingerprints_batch(fingerprints_to_save)?
+    } else {
+        0
+    };
 
     if verbose {
-        eprintln!("[rust] Saved {} fingerprints to DB in {:.3}s (batch insert)", count, db_save_start.elapsed().as_secs_f64());
+        eprintln!("[rust] Saved {} changed fingerprints to DB in {:.3}s",
+                 count, db_save_start.elapsed().as_secs_f64());
         eprintln!("[rust] Total processing time: {:.3}s", processing_start.elapsed().as_secs_f64());
-        eprintln!("[rust] Successfully saved: {}, Skipped: {}", count, skipped);
+        eprintln!("[rust] Summary: {} total, {} unchanged (skipped), {} updated",
+                 total_files, unchanged_count, count);
     }
 
-    Ok(count)
+    // Checkpoint WAL to remove -wal and -shm files
+    db.close_and_checkpoint()?;
+
+    // Return total baseline count (unchanged + updated)
+    Ok(unchanged_count + count)
 }
 
 /// Detect changes between current filesystem state and database
@@ -213,28 +252,19 @@ fn detect_changes_internal(db_path: &str, project_root: &str, scope_paths: Vec<S
 
     // Find all Python files in the project
     let python_files = find_python_files(project_root, &scope_paths)?;
-    // eprintln!("DEBUG: Found {} Python files to check", python_files.len());
 
-    // Process files sequentially
-    // TODO: Can optimize with parallel processing later by using multiple database connections
+    // Load ALL baselines in a single query (much faster than N queries)
+    let baselines = db.get_all_baseline_fingerprints()?;
+
+    // Process files in PARALLEL using rayon
+    // Now that we have all baselines in memory, we don't need DB access per file
     let changed_entries: Vec<_> = python_files
-        .iter()
+        .par_iter()
         .filter_map(|path| {
-            // eprintln!("DEBUG: Checking file: {}", path.display());
-            match check_file_changed(&db, path) {
-                Ok(Some(change)) => {
-                    // eprintln!("DEBUG: File changed: {} with {} changed blocks", path.display(), change.1.len());
-                    Some(change)
-                }
-                Ok(None) => {
-                    // eprintln!("DEBUG: File unchanged: {}", path.display());
-                    None
-                }
-                Err(_) => {
-                    // Only show warnings for actual errors
-                    // eprintln!("Warning: Failed to check {}: {}", path.display(), e);
-                    None
-                }
+            match check_file_changed_with_baseline(&baselines, path) {
+                Ok(Some(change)) => Some(change),
+                Ok(None) => None,
+                Err(_) => None,
             }
         })
         .collect();
@@ -256,7 +286,67 @@ fn detect_changes_internal(db_path: &str, project_root: &str, scope_paths: Vec<S
     })
 }
 
+/// Check if a file has changed using three-level detection (with pre-loaded baseline)
+///
+/// This version takes a pre-loaded HashMap of baselines for parallel processing
+fn check_file_changed_with_baseline(
+    baselines: &HashMap<String, Fingerprint>,
+    path: &Path,
+) -> Result<Option<(String, Vec<i32>)>> {
+    let filename = path.to_string_lossy().to_string();
+
+    // Get baseline fingerprint from pre-loaded map
+    let stored_fp = match baselines.get(&filename) {
+        Some(fp) => fp,
+        None => {
+            // No baseline for this file - not tracked yet
+            return Ok(None);
+        }
+    };
+
+    // Level 1: mtime check (fastest)
+    let metadata = std::fs::metadata(path)?;
+    let current_mtime = metadata
+        .modified()?
+        .duration_since(UNIX_EPOCH)?
+        .as_secs_f64();
+
+    if (current_mtime - stored_fp.mtime).abs() < 0.001 {
+        // mtime unchanged - file definitely not modified
+        return Ok(None);
+    }
+
+    // Level 2: file hash check (fast)
+    let content = std::fs::read_to_string(path)?;
+    let current_hash = blake3::hash(content.as_bytes()).to_hex().to_string();
+
+    if current_hash == stored_fp.file_hash {
+        // Hash unchanged - content is identical (mtime changed but not content)
+        return Ok(None);
+    }
+
+    // Level 3: block checksum comparison (precise)
+    let current_blocks = parse_module(&content)
+        .map_err(|e| anyhow::anyhow!("Parse error in {}: {}", filename, e))?;
+
+    let current_checksums: Vec<i32> = current_blocks.iter().map(|b| b.checksum).collect();
+
+    if current_checksums == stored_fp.checksums {
+        // Checksums unchanged - semantically equivalent (e.g., only whitespace/comments changed)
+        return Ok(None);
+    }
+
+    // Find which specific blocks changed
+    let changed_checksums = find_changed_checksums(&stored_fp.checksums, &current_checksums);
+
+    Ok(Some((filename, changed_checksums)))
+}
+
 /// Find all Python files in a directory
+///
+/// Scope paths only apply to test files - source files are always included.
+/// This ensures that when running a subset of tests, we still track all source
+/// file dependencies.
 fn find_python_files(root: &str, scope_paths: &[String]) -> Result<Vec<PathBuf>> {
     let mut files = Vec::new();
 
@@ -293,74 +383,35 @@ fn find_python_files(root: &str, scope_paths: &[String]) -> Result<Vec<PathBuf>>
                 std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
             };
 
-            // Check if file is within any of the scope paths
-            let in_scope = scope_paths_abs.iter().any(|scope| abs_path.starts_with(scope));
-            if in_scope {
-                files.push(abs_path);
+            // Determine if this is a test file
+            let filename = abs_path.file_name().and_then(|s| s.to_str()).unwrap_or("");
+            let is_test_filename = filename.starts_with("test_") || filename.ends_with("_test.py");
+            let in_tests_dir = abs_path
+                .components()
+                .any(|c| {
+                    if let std::path::Component::Normal(name) = c {
+                        let name_str = name.to_string_lossy();
+                        name_str == "tests" || name_str == "test"
+                    } else {
+                        false
+                    }
+                });
+            let is_test_file = is_test_filename || in_tests_dir;
+
+            // Scope paths only apply to test files
+            // Source files are always included
+            if is_test_file && !scope_paths_abs.is_empty() {
+                let in_scope = scope_paths_abs.iter().any(|scope| abs_path.starts_with(scope));
+                if !in_scope {
+                    continue;  // Skip test files outside scope
+                }
             }
+
+            files.push(abs_path);
         }
     }
 
     Ok(files)
-}
-
-/// Check if a file has changed using three-level detection
-///
-/// Returns Some((filename, changed_checksums)) if changed, None if unchanged
-fn check_file_changed(db: &TestmonDatabase, path: &Path) -> Result<Option<(String, Vec<i32>)>> {
-    let filename = path.to_string_lossy().to_string();
-
-    // Get baseline fingerprint (NOT last-run fingerprint!)
-    // This compares against the "known good" state set via --diff-baseline
-    let stored_fp = match db.get_baseline_fingerprint_rust(&filename)? {
-        Some(fp) => fp,
-        None => {
-            // No baseline for this file - it's not tracked yet, so no change to detect
-            // Baselines are set when running: pytest --diff-baseline
-            return Ok(None);
-        }
-    };
-
-    // Level 1: mtime check (fastest)
-    let metadata = std::fs::metadata(path)?;
-    let current_mtime = metadata
-        .modified()?
-        .duration_since(UNIX_EPOCH)?
-        .as_secs_f64();
-
-    // eprintln!("DEBUG: {} - current_mtime: {}, stored_mtime: {}, diff: {}",
-    //           filename, current_mtime, stored_fp.mtime, (current_mtime - stored_fp.mtime).abs());
-
-    if (current_mtime - stored_fp.mtime).abs() < 0.001 {
-        // mtime unchanged - file definitely not modified
-        // eprintln!("DEBUG: {} - mtime unchanged, skipping", filename);
-        return Ok(None);
-    }
-
-    // Level 2: file hash check (fast)
-    let content = std::fs::read_to_string(path)?;
-    let current_hash = blake3::hash(content.as_bytes()).to_hex().to_string();
-
-    if current_hash == stored_fp.file_hash {
-        // Hash unchanged - content is identical (mtime changed but not content)
-        return Ok(None);
-    }
-
-    // Level 3: block checksum comparison (precise)
-    let current_blocks = parse_module(&content)
-        .map_err(|e| anyhow::anyhow!("Parse error in {}: {}", filename, e))?;
-
-    let current_checksums: Vec<i32> = current_blocks.iter().map(|b| b.checksum).collect();
-
-    if current_checksums == stored_fp.checksums {
-        // Checksums unchanged - semantically equivalent (e.g., only whitespace/comments changed)
-        return Ok(None);
-    }
-
-    // Find which specific blocks changed
-    let changed_checksums = find_changed_checksums(&stored_fp.checksums, &current_checksums);
-
-    Ok(Some((filename, changed_checksums)))
 }
 
 /// Find which OLD checksums were removed/modified (these indicate blocks that changed)
@@ -432,13 +483,18 @@ fn process_coverage_data_internal(
     let test_file_path = Path::new(test_file);
 
     // Convert scope paths to absolute PathBufs for comparison
-    let scope_paths_abs: Vec<PathBuf> = scope_paths
-        .iter()
-        .map(|p| {
-            let path = PathBuf::from(p);
-            std::fs::canonicalize(&path).unwrap_or(path)
-        })
-        .collect();
+    // If scope_paths is empty, use project_root as the default scope
+    let scope_paths_abs: Vec<PathBuf> = if scope_paths.is_empty() {
+        vec![std::fs::canonicalize(project_root_path).unwrap_or_else(|_| project_root_path.to_path_buf())]
+    } else {
+        scope_paths
+            .iter()
+            .map(|p| {
+                let path = PathBuf::from(p);
+                std::fs::canonicalize(&path).unwrap_or(path)
+            })
+            .collect()
+    };
 
     // Process files in parallel with rayon
     let fingerprints: Vec<Fingerprint> = coverage_data
@@ -521,35 +577,49 @@ fn should_process_file(filepath: &Path, project_root: &Path, test_file: &Path, s
         return false;
     }
 
-    // Must be in the project root
-    let path_str = filepath.to_string_lossy();
-    if !path_str.starts_with(project_root.to_string_lossy().as_ref()) {
+    // Must be in the project root (use Path methods for cross-platform compatibility)
+    if !filepath.starts_with(project_root) {
         return false;
     }
 
-    // Check if file is within any of the scope paths
-    let in_scope = scope_paths.iter().any(|scope| filepath.starts_with(scope));
-    if !in_scope {
-        return false;
-    }
+    // Determine if this is a test file
+    // Use Path components for cross-platform compatibility (works on both / and \)
+    let filename = filepath.file_name().and_then(|s| s.to_str()).unwrap_or("");
+    let is_test_filename = filename.starts_with("test_") || filename.ends_with("_test.py");
 
-    // Filter out test files that aren't the current test file
-    // This prevents coverage contamination where test collection
-    // causes all tests to depend on all test files
-    let is_test_file = path_str.contains("/tests/")
-        || path_str.ends_with("_test.py")
-        || path_str
-            .rsplit('/')
-            .next()
-            .map(|name| name.starts_with("test_"))
-            .unwrap_or(false);
+    // Check if any parent directory is named "tests" or "test"
+    let in_tests_dir = filepath
+        .components()
+        .any(|c| {
+            if let std::path::Component::Normal(name) = c {
+                let name_str = name.to_string_lossy();
+                name_str == "tests" || name_str == "test"
+            } else {
+                false
+            }
+        });
 
+    let is_test_file = is_test_filename || in_tests_dir;
     let is_current_test_file = filepath == test_file;
 
-    // Skip other test files, but include source files and current test file
-    if is_test_file && !is_current_test_file {
-        return false;
+    // Scope paths only apply to test files, not source files
+    // Source files that are dependencies should always be tracked
+    if is_test_file {
+        // For test files: only include the current test file being executed
+        // This prevents coverage contamination where test collection
+        // causes all tests to depend on all test files
+        if !is_current_test_file {
+            return false;
+        }
+        // For the current test file, check scope (if running a subset of tests)
+        if !scope_paths.is_empty() {
+            let in_scope = scope_paths.iter().any(|scope| filepath.starts_with(scope));
+            if !in_scope {
+                return false;
+            }
+        }
     }
+    // Source files are always included (if they're in project root)
 
     true
 }

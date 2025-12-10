@@ -56,17 +56,14 @@ fn extract_module_skeleton(source: &str, parsed: &[ast::Stmt]) -> Result<String>
                 let start = get_line_number(source, stmt.start());
                 let end = get_line_number(source, stmt.end());
 
-                // Extract just the def line(s) - everything up to the colon
+                // Extract just the def line(s) - everything up to the colon that ends the signature
+                // Handle multi-line signatures like:
+                //   def foo(
+                //       arg1: int,
+                //       arg2: str,
+                //   ) -> bool:
                 if start <= source_lines.len() {
-                    let mut def_lines = Vec::new();
-                    let range_end = end.min(source_lines.len());
-                    for line in &source_lines[(start - 1)..range_end] {
-                        def_lines.push(*line);
-                        // Stop after the line with the colon
-                        if line.trim_end().ends_with(':') {
-                            break;
-                        }
-                    }
+                    let def_lines = extract_signature_lines(&source_lines, start, end);
                     skeleton_parts.push(def_lines.join("\n"));
                 }
             }
@@ -77,14 +74,7 @@ fn extract_module_skeleton(source: &str, parsed: &[ast::Stmt]) -> Result<String>
                 let end = get_line_number(source, stmt.end());
 
                 if start <= source_lines.len() {
-                    let mut def_lines = Vec::new();
-                    let range_end = end.min(source_lines.len());
-                    for line in &source_lines[(start - 1)..range_end] {
-                        def_lines.push(*line);
-                        if line.trim_end().ends_with(':') {
-                            break;
-                        }
-                    }
+                    let def_lines = extract_signature_lines(&source_lines, start, end);
                     skeleton_parts.push(def_lines.join("\n"));
                 }
             }
@@ -95,14 +85,7 @@ fn extract_module_skeleton(source: &str, parsed: &[ast::Stmt]) -> Result<String>
                 let end = get_line_number(source, stmt.end());
 
                 if start <= source_lines.len() {
-                    let mut def_lines = Vec::new();
-                    let range_end = end.min(source_lines.len());
-                    for line in &source_lines[(start - 1)..range_end] {
-                        def_lines.push(*line);
-                        if line.trim_end().ends_with(':') {
-                            break;
-                        }
-                    }
+                    let def_lines = extract_signature_lines(&source_lines, start, end);
                     skeleton_parts.push(def_lines.join("\n"));
                 }
             }
@@ -122,6 +105,46 @@ fn extract_module_skeleton(source: &str, parsed: &[ast::Stmt]) -> Result<String>
     }
 
     Ok(skeleton_parts.join("\n"))
+}
+
+/// Extract signature lines for a function/class definition
+///
+/// Handles multi-line signatures by tracking parenthesis/bracket depth
+/// and stopping after the line that contains the final `:` at depth 0.
+fn extract_signature_lines<'a>(source_lines: &[&'a str], start: usize, end: usize) -> Vec<&'a str> {
+    let mut def_lines = Vec::new();
+    let range_end = end.min(source_lines.len());
+
+    // Track nesting depth for parentheses, brackets, braces
+    let mut paren_depth: i32 = 0;
+    let mut bracket_depth: i32 = 0;
+    let mut brace_depth: i32 = 0;
+
+    for line in &source_lines[(start - 1)..range_end] {
+        def_lines.push(*line);
+
+        // Update depth counts
+        for ch in line.chars() {
+            match ch {
+                '(' => paren_depth += 1,
+                ')' => paren_depth = paren_depth.saturating_sub(1),
+                '[' => bracket_depth += 1,
+                ']' => bracket_depth = bracket_depth.saturating_sub(1),
+                '{' => brace_depth += 1,
+                '}' => brace_depth = brace_depth.saturating_sub(1),
+                _ => {}
+            }
+        }
+
+        // Stop after the line with the colon when at depth 0
+        // This handles both simple `def foo():` and complex multi-line signatures
+        let trimmed = line.trim_end();
+        if trimmed.ends_with(':') && paren_depth == 0 && bracket_depth == 0 && brace_depth == 0 {
+            break;
+        }
+    }
+
+    def_lines
 }
 
 /// Internal implementation that returns anyhow::Result

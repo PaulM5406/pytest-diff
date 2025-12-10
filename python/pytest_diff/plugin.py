@@ -37,8 +37,10 @@ class TestmonPlugin:
                 "pytest-diff Rust core not found. " "Please install with: pip install pytest-diff"
             )
 
-        # Initialize components
-        self.db_path = Path(config.rootdir) / ".testmondata"
+        # Initialize components - store database in pytest cache folder
+        cache_dir = Path(config.rootdir) / ".pytest_cache" / "pytest-diff"
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        self.db_path = cache_dir / "pytest_diff.db"
         self.db = None
         self.cov = None
         self.fp_cache = None  # Fingerprint cache for avoiding re-parsing
@@ -46,6 +48,10 @@ class TestmonPlugin:
         self.current_test = None
         self.test_start_time = None
         self.test_files_executed = []
+
+        # Get Python version for environment tracking
+        import sys
+        self.python_version = f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
 
         # Batch writing for test executions
         self.test_execution_batch = []
@@ -56,6 +62,8 @@ class TestmonPlugin:
         # Get pytest invocation scope (e.g., if user runs 'pytest tests/unit/')
         # We'll use this to only track files within the specified scope
         self.scope_paths = self._get_scope_paths(config)
+        if self.verbose or config.option.verbose >= 2:
+            print(f"[DEBUG] Scope paths: {self.scope_paths}")
 
     def _log(self, message):
         """Log verbose message with timestamp"""
@@ -76,18 +84,25 @@ class TestmonPlugin:
 
         scope_paths = []
         for arg in config.args:
+            # Strip pytest node ID (e.g., "tests/test_foo.py::TestClass::test_method" -> "tests/test_foo.py")
+            file_path = arg.split("::")[0]
+
             # Resolve to absolute path
-            path = Path(arg)
+            path = Path(file_path)
             if not path.is_absolute():
                 path = Path(config.rootdir) / path
 
             # Handle both files and directories
-            resolved = path.resolve()
-            if resolved.is_dir():
-                scope_paths.append(str(resolved))
-            elif resolved.is_file():
-                # For files, use their parent directory as scope
-                scope_paths.append(str(resolved.parent))
+            try:
+                resolved = path.resolve(strict=False)  # Don't fail if path doesn't exist
+                if resolved.is_dir():
+                    scope_paths.append(str(resolved))
+                elif resolved.is_file() or file_path.endswith('.py'):
+                    # For files, use their parent directory as scope
+                    scope_paths.append(str(resolved.parent))
+            except (OSError, RuntimeError):
+                # If path doesn't exist or can't be resolved, skip it
+                pass
 
         return scope_paths if scope_paths else [str(Path(config.rootdir).resolve())]
 
@@ -99,7 +114,7 @@ class TestmonPlugin:
         import time
         flush_start = time.time()
         for nodeid, fingerprints, duration, failed in self.test_execution_batch:
-            self.db.save_test_execution(nodeid, fingerprints, duration, failed)
+            self.db.save_test_execution(nodeid, fingerprints, duration, failed, self.python_version)
         self._log(f"Flushed {len(self.test_execution_batch)} test executions to DB in {time.time() - flush_start:.3f}s")
         self.test_execution_batch = []
 
@@ -123,10 +138,20 @@ class TestmonPlugin:
             print(f"✓ pytest-diff: Using database at {self.db_path}")
         except Exception as e:
             print(f"⚠ pytest-diff: Could not open database: {e}")
-            print(f"  Creating new database at {self.db_path}")
-            db_start = time.time()
-            self.db = _core.TestmonDatabase(str(self.db_path))
-            self._log(f"Database created in {time.time() - db_start:.3f}s")
+            # Try to delete corrupted database and create fresh
+            try:
+                if self.db_path.exists():
+                    self.db_path.unlink()
+                    print(f"  Deleted corrupted database, creating new one at {self.db_path}")
+                else:
+                    print(f"  Creating new database at {self.db_path}")
+                db_start = time.time()
+                self.db = _core.TestmonDatabase(str(self.db_path))
+                self._log(f"Database created in {time.time() - db_start:.3f}s")
+            except Exception as e2:
+                print(f"⚠ pytest-diff: Failed to create database: {e2}")
+                self.enabled = False
+                return
 
         # Initialize fingerprint cache
         cache_start = time.time()
@@ -188,8 +213,19 @@ class TestmonPlugin:
                     if self.deselected_items:
                         config.hook.pytest_deselected(items=self.deselected_items)
                 else:
-                    print("  No tests affected by changes (database may be empty)")
-                    print(f"  Running all {len(items)} tests to build database")
+                    # No tests affected - check if database has test data
+                    stats = self.db.get_stats()
+                    if stats.get("test_count", 0) == 0:
+                        # Database is empty - run all tests to build it
+                        print("  No tests affected by changes (database is empty)")
+                        print(f"  Running all {len(items)} tests to build database")
+                    else:
+                        # Database has data but no tests affected - skip all
+                        print("  No tests affected by changes")
+                        print(f"  Skipping all {len(items)} tests")
+                        self.deselected_items = items[:]
+                        items[:] = []
+                        config.hook.pytest_deselected(items=self.deselected_items)
             else:
                 print("\n✓ pytest-diff: No changes detected")
                 print(f"  Skipping all {len(items)} tests")
@@ -234,13 +270,13 @@ class TestmonPlugin:
         import time
 
         report_start = time.time()
-        duration = time.time() - (self.test_start_time or time.time())
+        # Calculate duration safely - if test_start_time is None, duration is 0
+        duration = time.time() - self.test_start_time if self.test_start_time else 0.0
         failed = call.excinfo is not None
 
         try:
             # Stop coverage and get executed files
             fingerprints = []
-            seen_files = set()
 
             if self.cov:
                 cov_stop_start = time.time()
@@ -303,7 +339,7 @@ class TestmonPlugin:
                 # If no coverage, still track the test file itself
                 test_file = Path(item.fspath).resolve()
                 test_file_str = str(test_file)
-                if test_file_str not in seen_files and test_file.exists() and test_file.suffix == ".py":
+                if test_file.exists() and test_file.suffix == ".py":
                     try:
                         fingerprints.append(_core.calculate_fingerprint(test_file_str))
                     except Exception:
@@ -366,6 +402,13 @@ class TestmonPlugin:
                 f"pytest-diff: {len(self.deselected_items)} tests deselected",
                 green=True,
             )
+
+        # Close database to checkpoint WAL and remove -wal/-shm files
+        if self.db:
+            try:
+                self.db.close()
+            except Exception:
+                pass  # Ignore close errors
 
 
 def pytest_addoption(parser):

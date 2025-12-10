@@ -81,6 +81,15 @@ impl TestmonDatabase {
         Ok(())
     }
 
+    /// Close database and checkpoint WAL (public Rust API)
+    pub fn close_and_checkpoint(&self) -> Result<()> {
+        let conn = self.conn.write();
+        // Checkpoint WAL to merge changes into main database file
+        conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
+            .context("Failed to checkpoint WAL")?;
+        Ok(())
+    }
+
     /// Get or create environment ID for current Python environment
     fn get_or_create_environment(&self, env_name: &str, python_version: &str) -> Result<i64> {
         // Check cache first
@@ -258,14 +267,17 @@ impl TestmonDatabase {
     /// * `fingerprints` - List of file fingerprints the test touched
     /// * `duration` - Test execution time in seconds
     /// * `failed` - Whether the test failed
+    /// * `python_version` - Python version string (e.g., "3.12.0")
+    #[pyo3(signature = (test_name, fingerprints, duration, failed, python_version = "3.12"))]
     fn save_test_execution(
         &mut self,
         test_name: &str,
         fingerprints: Vec<Fingerprint>,
         duration: f64,
         failed: bool,
+        python_version: &str,
     ) -> PyResult<()> {
-        self.save_test_execution_internal(test_name, fingerprints, duration, failed)
+        self.save_test_execution_internal(test_name, fingerprints, duration, failed, python_version)
             .map_err(|e| {
                 pyo3::exceptions::PyRuntimeError::new_err(format!(
                     "Failed to save test execution: {}",
@@ -357,6 +369,21 @@ impl TestmonDatabase {
             })?;
         Ok(())
     }
+
+    /// Close the database and checkpoint WAL to remove -wal and -shm files
+    fn close(&self) -> PyResult<()> {
+        let conn = self.conn.write();
+        // Checkpoint WAL to merge it into main database file
+        // TRUNCATE mode will truncate the WAL file to zero bytes
+        conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
+            .map_err(|e| {
+                pyo3::exceptions::PyRuntimeError::new_err(format!(
+                    "Failed to checkpoint WAL: {}",
+                    e
+                ))
+            })?;
+        Ok(())
+    }
 }
 
 // Internal implementation methods
@@ -367,9 +394,10 @@ impl TestmonDatabase {
         fingerprints: Vec<Fingerprint>,
         duration: f64,
         failed: bool,
+        python_version: &str,
     ) -> Result<()> {
         // Get or create environment
-        let env_id = self.get_or_create_environment("default", "3.12")?;
+        let env_id = self.get_or_create_environment("default", python_version)?;
 
         let mut conn = self.conn.write();
         let tx = conn.transaction()?;
@@ -574,6 +602,36 @@ impl TestmonDatabase {
         .optional()
         .context("Failed to query baseline fingerprint")
     }
+
+    /// Get all baseline fingerprints in a single query
+    ///
+    /// Returns a HashMap of filename -> Fingerprint for efficient lookup
+    pub fn get_all_baseline_fingerprints(&self) -> Result<HashMap<String, Fingerprint>> {
+        let conn = self.conn.read();
+
+        let mut stmt = conn.prepare(
+            "SELECT filename, method_checksums, mtime, fsha FROM baseline_fp"
+        )?;
+
+        let fingerprints = stmt
+            .query_map([], |row| {
+                let filename: String = row.get(0)?;
+                let checksums_blob: Vec<u8> = row.get(1)?;
+                let checksums = deserialize_checksums(&checksums_blob);
+
+                Ok((filename.clone(), Fingerprint {
+                    filename,
+                    checksums,
+                    mtime: row.get(2)?,
+                    file_hash: row.get(3)?,
+                    blocks: None,
+                }))
+            })?
+            .filter_map(|r| r.ok())
+            .collect();
+
+        Ok(fingerprints)
+    }
 }
 
 /// Serialize checksums (Vec<i32>) to blob
@@ -634,7 +692,7 @@ mod tests {
             blocks: None,
         };
 
-        db.save_test_execution_internal("test_example", vec![fp], 0.5, false)
+        db.save_test_execution_internal("test_example", vec![fp], 0.5, false, "3.12")
             .unwrap();
 
         let stats = db.get_stats_internal().unwrap();
@@ -664,9 +722,9 @@ mod tests {
             blocks: None,
         };
 
-        db.save_test_execution_internal("test_one", vec![fp.clone()], 0.1, false)
+        db.save_test_execution_internal("test_one", vec![fp.clone()], 0.1, false, "3.12")
             .unwrap();
-        db.save_test_execution_internal("test_two", vec![fp], 0.2, false)
+        db.save_test_execution_internal("test_two", vec![fp], 0.2, false, "3.12")
             .unwrap();
 
         let mut changed = HashMap::new();

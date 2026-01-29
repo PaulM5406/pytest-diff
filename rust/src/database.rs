@@ -322,12 +322,6 @@ impl TestmonDatabase {
         })
     }
 
-    /// Synchronize filesystem state with database
-    fn sync_filesystem(&mut self, _root: &str) -> PyResult<()> {
-        // TODO: Implement filesystem sync
-        Ok(())
-    }
-
     /// Clear all cached data
     fn clear_cache(&self) -> PyResult<()> {
         self.cache.clear();

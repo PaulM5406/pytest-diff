@@ -14,12 +14,6 @@ dependencies = [
     "pytest>=7.0",
     "coverage>=7.0",
 ]
-
-[project.optional-dependencies]
-dev = [
-    "ruff",
-    "ty",
-]
 keywords = ["pytest", "testing", "test-selection", "tdd", "continuous-integration"]
 classifiers = [
     "Development Status :: 3 - Alpha",
@@ -35,6 +29,12 @@ classifiers = [
     "Programming Language :: Python :: 3.13",
     "Programming Language :: Rust",
     "Topic :: Software Development :: Testing",
+]
+
+[project.optional-dependencies]
+dev = [
+    "ruff",
+    "ty",
 ]
 
 [project.urls]

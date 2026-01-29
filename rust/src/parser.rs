@@ -7,7 +7,7 @@ use anyhow::Result;
 use crc32fast::Hasher;
 use pyo3::prelude::*;
 use rustpython_parser::{ast, Parse};
-use rustpython_parser_core::source_code::LinearLocator;
+use rustpython_parser_core::source_code::RandomLocator;
 
 use crate::types::Block;
 
@@ -43,7 +43,7 @@ pub fn parse_module(source: &str) -> PyResult<Vec<Block>> {
 ///
 /// This ensures the module checksum only changes when module-level code changes,
 /// not when individual function implementations change.
-fn extract_module_skeleton(source: &str, parsed: &[ast::Stmt]) -> Result<String> {
+fn extract_module_skeleton(source: &str, parsed: &[ast::Stmt], locator: &mut RandomLocator) -> Result<String> {
     use ast::Ranged;
 
     let source_lines: Vec<&str> = source.lines().collect();
@@ -53,8 +53,8 @@ fn extract_module_skeleton(source: &str, parsed: &[ast::Stmt]) -> Result<String>
         match stmt {
             // Function definitions: include signature only
             ast::Stmt::FunctionDef(_func_def) => {
-                let start = get_line_number(source, stmt.start());
-                let end = get_line_number(source, stmt.end());
+                let start = get_line_number(locator, stmt.start());
+                let end = get_line_number(locator, stmt.end());
 
                 // Extract just the def line(s) - everything up to the colon that ends the signature
                 // Handle multi-line signatures like:
@@ -70,8 +70,8 @@ fn extract_module_skeleton(source: &str, parsed: &[ast::Stmt]) -> Result<String>
 
             // Async function definitions: include signature only
             ast::Stmt::AsyncFunctionDef(_async_func_def) => {
-                let start = get_line_number(source, stmt.start());
-                let end = get_line_number(source, stmt.end());
+                let start = get_line_number(locator, stmt.start());
+                let end = get_line_number(locator, stmt.end());
 
                 if start <= source_lines.len() {
                     let def_lines = extract_signature_lines(&source_lines, start, end);
@@ -81,8 +81,8 @@ fn extract_module_skeleton(source: &str, parsed: &[ast::Stmt]) -> Result<String>
 
             // Class definitions: include signature only
             ast::Stmt::ClassDef(_class_def) => {
-                let start = get_line_number(source, stmt.start());
-                let end = get_line_number(source, stmt.end());
+                let start = get_line_number(locator, stmt.start());
+                let end = get_line_number(locator, stmt.end());
 
                 if start <= source_lines.len() {
                     let def_lines = extract_signature_lines(&source_lines, start, end);
@@ -93,8 +93,8 @@ fn extract_module_skeleton(source: &str, parsed: &[ast::Stmt]) -> Result<String>
             // All other statements: include completely
             // This includes: imports, assignments, expressions, etc.
             _ => {
-                let start = get_line_number(source, stmt.start());
-                let end = get_line_number(source, stmt.end());
+                let start = get_line_number(locator, stmt.start());
+                let end = get_line_number(locator, stmt.end());
 
                 if start <= source_lines.len() {
                     let stmt_source = extract_source_lines(source, start, end)?;
@@ -105,6 +105,35 @@ fn extract_module_skeleton(source: &str, parsed: &[ast::Stmt]) -> Result<String>
     }
 
     Ok(skeleton_parts.join("\n"))
+}
+
+/// Strip a trailing comment from a line of Python code.
+///
+/// Scans the line tracking string literal state (`'`, `"`) and returns the
+/// slice before the first `#` that is not inside a string literal.
+fn strip_trailing_comment(line: &str) -> &str {
+    let mut in_single = false;
+    let mut in_double = false;
+    let bytes = line.as_bytes();
+
+    let mut i = 0;
+    while i < bytes.len() {
+        let ch = bytes[i];
+        if ch == b'\\' && (in_single || in_double) {
+            // Skip escaped character inside a string
+            i += 2;
+            continue;
+        }
+        if ch == b'\'' && !in_double {
+            in_single = !in_single;
+        } else if ch == b'"' && !in_single {
+            in_double = !in_double;
+        } else if ch == b'#' && !in_single && !in_double {
+            return line[..i].trim_end();
+        }
+        i += 1;
+    }
+    line
 }
 
 /// Extract signature lines for a function/class definition
@@ -138,8 +167,10 @@ fn extract_signature_lines<'a>(source_lines: &[&'a str], start: usize, end: usiz
 
         // Stop after the line with the colon when at depth 0
         // This handles both simple `def foo():` and complex multi-line signatures
+        // Strip trailing comments first to avoid false positives like `@deco  # TODO:`
         let trimmed = line.trim_end();
-        if trimmed.ends_with(':') && paren_depth == 0 && bracket_depth == 0 && brace_depth == 0 {
+        let code_part = strip_trailing_comment(trimmed);
+        if code_part.ends_with(':') && paren_depth == 0 && bracket_depth == 0 && brace_depth == 0 {
             break;
         }
     }
@@ -158,11 +189,14 @@ pub(crate) fn parse_module_internal(source: &str) -> Result<Vec<Block>> {
     let parsed =
         ast::Suite::parse(source, "<string>").map_err(|e| anyhow::anyhow!("Parse error: {}", e))?;
 
+    // Build a RandomLocator once for efficient offset-to-line lookups
+    let mut locator = RandomLocator::new(source);
+
     let mut blocks = Vec::new();
 
     // Add module-level block (skeleton only - excludes function/class bodies)
     // This ensures that changing a function body doesn't invalidate the module checksum
-    let module_skeleton = extract_module_skeleton(source, &parsed)?;
+    let module_skeleton = extract_module_skeleton(source, &parsed, &mut locator)?;
     let module_checksum = calculate_checksum(&module_skeleton);
     let line_count = source.lines().count();
     blocks.push(Block {
@@ -173,8 +207,8 @@ pub(crate) fn parse_module_internal(source: &str) -> Result<Vec<Block>> {
         block_type: "module".to_string(),
     });
 
-    // Extract blocks from AST (we'll create locators as needed)
-    extract_blocks_from_statements(&parsed, source, &mut blocks)?;
+    // Extract blocks from AST
+    extract_blocks_from_statements(&parsed, source, &mut blocks, &mut locator)?;
 
     Ok(blocks)
 }
@@ -184,9 +218,10 @@ fn extract_blocks_from_statements(
     statements: &[ast::Stmt],
     source: &str,
     blocks: &mut Vec<Block>,
+    locator: &mut RandomLocator,
 ) -> Result<()> {
     for stmt in statements {
-        extract_block_from_statement(stmt, source, blocks)?;
+        extract_block_from_statement(stmt, source, blocks, locator)?;
     }
     Ok(())
 }
@@ -196,13 +231,14 @@ fn extract_block_from_statement(
     stmt: &ast::Stmt,
     source: &str,
     blocks: &mut Vec<Block>,
+    locator: &mut RandomLocator,
 ) -> Result<()> {
     use ast::Ranged; // Import trait to use range() method
 
     match stmt {
         ast::Stmt::FunctionDef(func_def) => {
-            let start = get_line_number(source, stmt.start());
-            let end = get_line_number(source, stmt.end());
+            let start = get_line_number(locator, stmt.start());
+            let end = get_line_number(locator, stmt.end());
 
             // Extract the source for this function
             let block_source = extract_source_lines(source, start, end)?;
@@ -217,11 +253,11 @@ fn extract_block_from_statement(
             });
 
             // Extract nested blocks
-            extract_blocks_from_statements(&func_def.body, source, blocks)?;
+            extract_blocks_from_statements(&func_def.body, source, blocks, locator)?;
         }
         ast::Stmt::AsyncFunctionDef(async_func_def) => {
-            let start = get_line_number(source, stmt.start());
-            let end = get_line_number(source, stmt.end());
+            let start = get_line_number(locator, stmt.start());
+            let end = get_line_number(locator, stmt.end());
 
             let block_source = extract_source_lines(source, start, end)?;
             let checksum = calculate_checksum(&block_source);
@@ -234,11 +270,11 @@ fn extract_block_from_statement(
                 block_type: "async_function".to_string(),
             });
 
-            extract_blocks_from_statements(&async_func_def.body, source, blocks)?;
+            extract_blocks_from_statements(&async_func_def.body, source, blocks, locator)?;
         }
         ast::Stmt::ClassDef(class_def) => {
-            let start = get_line_number(source, stmt.start());
-            let end = get_line_number(source, stmt.end());
+            let start = get_line_number(locator, stmt.start());
+            let end = get_line_number(locator, stmt.end());
 
             let block_source = extract_source_lines(source, start, end)?;
             let checksum = calculate_checksum(&block_source);
@@ -251,35 +287,35 @@ fn extract_block_from_statement(
                 block_type: "class".to_string(),
             });
 
-            extract_blocks_from_statements(&class_def.body, source, blocks)?;
+            extract_blocks_from_statements(&class_def.body, source, blocks, locator)?;
         }
         // Handle other statement types that may contain nested blocks
         ast::Stmt::If(if_stmt) => {
-            extract_blocks_from_statements(&if_stmt.body, source, blocks)?;
-            extract_blocks_from_statements(&if_stmt.orelse, source, blocks)?;
+            extract_blocks_from_statements(&if_stmt.body, source, blocks, locator)?;
+            extract_blocks_from_statements(&if_stmt.orelse, source, blocks, locator)?;
         }
         ast::Stmt::For(for_stmt) => {
-            extract_blocks_from_statements(&for_stmt.body, source, blocks)?;
-            extract_blocks_from_statements(&for_stmt.orelse, source, blocks)?;
+            extract_blocks_from_statements(&for_stmt.body, source, blocks, locator)?;
+            extract_blocks_from_statements(&for_stmt.orelse, source, blocks, locator)?;
         }
         ast::Stmt::While(while_stmt) => {
-            extract_blocks_from_statements(&while_stmt.body, source, blocks)?;
-            extract_blocks_from_statements(&while_stmt.orelse, source, blocks)?;
+            extract_blocks_from_statements(&while_stmt.body, source, blocks, locator)?;
+            extract_blocks_from_statements(&while_stmt.orelse, source, blocks, locator)?;
         }
         ast::Stmt::With(with_stmt) => {
-            extract_blocks_from_statements(&with_stmt.body, source, blocks)?;
+            extract_blocks_from_statements(&with_stmt.body, source, blocks, locator)?;
         }
         ast::Stmt::Try(try_stmt) => {
-            extract_blocks_from_statements(&try_stmt.body, source, blocks)?;
+            extract_blocks_from_statements(&try_stmt.body, source, blocks, locator)?;
             for handler in &try_stmt.handlers {
                 match handler {
                     ast::ExceptHandler::ExceptHandler(h) => {
-                        extract_blocks_from_statements(&h.body, source, blocks)?;
+                        extract_blocks_from_statements(&h.body, source, blocks, locator)?;
                     }
                 }
             }
-            extract_blocks_from_statements(&try_stmt.orelse, source, blocks)?;
-            extract_blocks_from_statements(&try_stmt.finalbody, source, blocks)?;
+            extract_blocks_from_statements(&try_stmt.orelse, source, blocks, locator)?;
+            extract_blocks_from_statements(&try_stmt.finalbody, source, blocks, locator)?;
         }
         _ => {}
     }
@@ -288,11 +324,9 @@ fn extract_block_from_statement(
 
 /// Convert TextSize to 1-indexed line number
 fn get_line_number(
-    source: &str,
+    locator: &mut RandomLocator,
     offset: rustpython_parser_core::text_size::TextSize,
 ) -> usize {
-    // Create a fresh locator for each lookup to avoid state issues
-    let mut locator = LinearLocator::new(source);
     let location = locator.locate(offset);
     location.row.get() as usize // Convert OneIndexed u32 to usize
 }
@@ -412,6 +446,51 @@ def outer():
         assert!(blocks.len() >= 3);
         assert!(blocks.iter().any(|b| b.name == "outer"));
         assert!(blocks.iter().any(|b| b.name == "inner"));
+    }
+
+    #[test]
+    fn test_multiline_signature_with_comment_colon() {
+        // A multi-line signature where an intermediate line has a trailing
+        // comment ending in `:` should NOT cause premature termination.
+        let source = r#"
+def foo(
+    a,  # see also dict:
+    b,
+):
+    pass
+"#;
+        let blocks = parse_module_internal(source).unwrap();
+
+        let func = blocks.iter().find(|b| b.name == "foo").unwrap();
+        assert_eq!(func.block_type, "function");
+        assert_eq!(func.start_line, 2);
+        assert_eq!(func.end_line, 6);
+    }
+
+    #[test]
+    fn test_extract_signature_with_comment_colon() {
+        // Directly test that extract_signature_lines doesn't stop at a comment colon
+        let lines = vec![
+            "def foo(",
+            "    a,  # note:",
+            "    b,",
+            "):",
+            "    pass",
+        ];
+        let sig = extract_signature_lines(&lines, 1, 5);
+        // Should include lines up to `):`
+        assert_eq!(sig.len(), 4);
+        assert_eq!(sig[3], "):");
+    }
+
+    #[test]
+    fn test_strip_trailing_comment() {
+        assert_eq!(strip_trailing_comment("code  # comment"), "code");
+        assert_eq!(strip_trailing_comment("no comment"), "no comment");
+        assert_eq!(strip_trailing_comment("'#' not a comment"), "'#' not a comment");
+        assert_eq!(strip_trailing_comment("\"#\" not a comment"), "\"#\" not a comment");
+        assert_eq!(strip_trailing_comment("x = 1  # TODO:"), "x = 1");
+        assert_eq!(strip_trailing_comment("@deco  # note:"), "@deco");
     }
 
     #[test]

@@ -13,14 +13,12 @@ mod database;
 mod fingerprint;
 mod fingerprint_cache;
 mod parser;
-mod tracer;
 mod types;
 
 pub use database::TestmonDatabase;
 pub use fingerprint::{calculate_fingerprint, detect_changes, process_coverage_data, save_baseline};
 pub use fingerprint_cache::FingerprintCache;
 pub use parser::parse_module;
-pub use tracer::CoverageCollector;
 pub use types::{Block, ChangedFiles, Fingerprint, TestExecution};
 
 /// Python module initialization
@@ -32,7 +30,6 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<ChangedFiles>()?;
     m.add_class::<TestExecution>()?;
     m.add_class::<TestmonDatabase>()?;
-    m.add_class::<CoverageCollector>()?;
     m.add_class::<FingerprintCache>()?;
 
     // Register functions

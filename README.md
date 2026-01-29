@@ -170,10 +170,9 @@ pytest (Python)
 pytest-diff plugin (Python)
     ↓ (PyO3 bindings)
 pytest-diff-core (Rust)
-    ├── AST Parser (Ruff's parser)
+    ├── AST Parser (RustPython parser)
     ├── Fingerprint Engine (CRC32)
-    ├── Database Layer (SQLite + Cache)
-    └── Coverage Collector
+    └── Database Layer (SQLite + Cache)
 ```
 
 ### Why Rust?
@@ -190,35 +189,6 @@ pytest-diff addresses these with:
 2. **Ruff's Python parser** (20-40% faster than Python's ast module)
 3. **Optimized SQLite** (prepared statements, WAL mode, memory-mapped I/O)
 4. **In-memory caching** (DashMap for hot paths)
-
-## Comparison with pytest-testmon
-
-| Feature | pytest-testmon | pytest-diff |
-|---------|---------------|-------------|
-| **Speed** | Baseline | 10-30x faster |
-| **Language** | Pure Python | Rust core |
-| **Python 3.12 sys.monitoring** | ❌ | ✅ |
-| **Database** | SQLite | SQLite (optimized) |
-| **pytest-xdist** | ✅ | ✅ |
-| **Database compatibility** | N/A | ✅ Can read testmon DBs |
-
-pytest-diff is designed as a **drop-in replacement** - if you're using pytest-testmon, you can switch to pytest-diff and keep your existing `.testmondata` database.
-
-## Migration from pytest-testmon
-
-```bash
-# If you're using pytest-testmon
-pip uninstall pytest-testmon
-pip install pytest-diff
-
-# Change your command from:
-pytest --testmon
-
-# To:
-pytest --diff
-
-# Your existing .testmondata database will work!
-```
 
 ## Contributing
 

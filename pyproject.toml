@@ -14,6 +14,12 @@ dependencies = [
     "pytest>=7.0",
     "coverage>=7.0",
 ]
+
+[project.optional-dependencies]
+dev = [
+    "ruff",
+    "ty",
+]
 keywords = ["pytest", "testing", "test-selection", "tdd", "continuous-integration"]
 classifiers = [
     "Development Status :: 3 - Alpha",
@@ -50,10 +56,9 @@ python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
 
-[tool.black]
-line-length = 100
-target-version = ['py38', 'py39', 'py310', 'py311', 'py312']
-
 [tool.ruff]
 line-length = 100
 target-version = "py38"
+
+[tool.ty.environment]
+python-version = "3.12"

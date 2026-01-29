@@ -148,7 +148,12 @@ fn extract_signature_lines<'a>(source_lines: &[&'a str], start: usize, end: usiz
 }
 
 /// Internal implementation that returns anyhow::Result
-fn parse_module_internal(source: &str) -> Result<Vec<Block>> {
+///
+/// This must be used instead of `parse_module` for any code running inside
+/// Rayon parallel iterators, because the #[pyfunction] version creates PyErr
+/// objects which require the GIL — causing a deadlock when called from worker
+/// threads while the main Python thread holds the GIL.
+pub(crate) fn parse_module_internal(source: &str) -> Result<Vec<Block>> {
     // Parse the source code with RustPython's parser
     let parsed =
         ast::Suite::parse(source, "<string>").map_err(|e| anyhow::anyhow!("Parse error: {}", e))?;

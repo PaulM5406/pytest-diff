@@ -15,9 +15,9 @@ from pathlib import Path
 
 # Rust core will be imported when built with maturin
 try:
-    from pytest_diff import _core  # type: ignore
+    from pytest_diff import _core
 except ImportError:
-    _core = None  # Allow import before building
+    _core = None  # type: ignore[assignment]  # Allow import before building
 
 
 class TestmonPlugin:
@@ -41,9 +41,9 @@ class TestmonPlugin:
         cache_dir = Path(config.rootdir) / ".pytest_cache" / "pytest-diff"
         cache_dir.mkdir(parents=True, exist_ok=True)
         self.db_path = cache_dir / "pytest_diff.db"
-        self.db = None
+        self.db: _core.TestmonDatabase | None = None
         self.cov = None
-        self.fp_cache = None  # Fingerprint cache for avoiding re-parsing
+        self.fp_cache: _core.FingerprintCache | None = None  # Fingerprint cache for avoiding re-parsing
         self.deselected_items = []
         self.current_test = None
         self.test_start_time = None
@@ -135,7 +135,7 @@ class TestmonPlugin:
 
     def _flush_test_batch(self):
         """Flush batched test executions to database"""
-        if not self.test_execution_batch:
+        if not self.test_execution_batch or self.db is None:
             return
 
         import time
@@ -226,6 +226,7 @@ class TestmonPlugin:
                 print(f"  Changed blocks in {len(changed.changed_blocks)} files")
 
                 # Get affected tests from database
+                assert self.db is not None
                 affected_tests = self.db.get_affected_tests(changed.changed_blocks)
 
                 if affected_tests:
@@ -332,7 +333,10 @@ class TestmonPlugin:
                     # Basic filtering: only .py files in project
                     if filepath.suffix == ".py" and str(filepath).startswith(str(self.config.rootdir)):
                         abs_path = str(filepath.resolve())
-                        executed_lines = list(data.lines(filename))
+                        lines = data.lines(filename)
+                        if lines is None:
+                            continue
+                        executed_lines = list(lines)
                         coverage_map[abs_path] = executed_lines
                 self._log(f"Extracted coverage for {len(coverage_map)} files in {time.time() - extract_start:.3f}s")
 

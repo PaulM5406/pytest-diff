@@ -15,7 +15,7 @@ use std::time::UNIX_EPOCH;
 use walkdir::WalkDir;
 
 use crate::database::TestmonDatabase;
-use crate::parser::parse_module;
+use crate::parser::parse_module_internal;
 use crate::types::{Block, ChangedFiles, Fingerprint};
 
 /// Calculate fingerprint for a single Python file
@@ -45,7 +45,7 @@ pub(crate) fn calculate_fingerprint_internal(path: &str) -> Result<Fingerprint> 
     let file_hash = blake3::hash(content.as_bytes()).to_hex().to_string();
 
     // Parse and extract blocks
-    let blocks = parse_module(&content)
+    let blocks = parse_module_internal(&content)
         .map_err(|e| anyhow::anyhow!("Failed to parse Python file: {}", e))?;
 
     // Extract checksums
@@ -326,7 +326,7 @@ fn check_file_changed_with_baseline(
     }
 
     // Level 3: block checksum comparison (precise)
-    let current_blocks = parse_module(&content)
+    let current_blocks = parse_module_internal(&content)
         .map_err(|e| anyhow::anyhow!("Parse error in {}: {}", filename, e))?;
 
     let current_checksums: Vec<i32> = current_blocks.iter().map(|b| b.checksum).collect();

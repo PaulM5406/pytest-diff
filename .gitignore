@@ -15,6 +15,7 @@ venv/
 target/
 Cargo.lock
 **/*.rs.bk
+undefined/
 
 # IDE
 .vscode/

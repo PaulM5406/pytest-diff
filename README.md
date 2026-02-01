@@ -41,6 +41,12 @@ pytest --diff-baseline
 # 2. After making changes, run only affected tests
 pytest --diff
 
+# 3. Update baseline incrementally (only re-runs affected tests)
+pytest --diff-baseline
+
+# 4. Force a full baseline rebuild when needed
+pytest --diff-baseline --diff-force
+
 # Example output:
 # pytest-diff: Detected 3 modified files
 #   Running 12 affected tests
@@ -52,12 +58,13 @@ pytest --diff
 
 pytest-diff uses a three-phase approach:
 
-### 1. **Dependency Tracking** (First Run)
-- Runs all tests with coverage enabled
-- Maps which tests execute which code blocks
+### 1. **Baseline** (`--diff-baseline`)
+- First run: executes all tests with coverage, maps which tests touch which code blocks
+- Subsequent runs: **incremental** — only re-runs tests affected by changes since last baseline
 - Stores dependency graph in `.pytest_cache/pytest-diff/pytest_diff.db` SQLite database
+- Use `--diff-force` to force a full rebuild when needed
 
-### 2. **Change Detection** (Subsequent Runs)
+### 2. **Change Detection** (`--diff`)
 - Parses modified files with Rust (blazingly fast!)
 - Calculates checksums for each code block
 - Compares against stored fingerprints to find changed blocks
@@ -65,7 +72,6 @@ pytest-diff uses a three-phase approach:
 ### 3. **Test Selection**
 - Queries database for tests that depend on changed blocks
 - Runs only affected tests
-- Updates database with new fingerprints
 
 ```
 Code Change → AST Parsing (Rust) → Block Checksums → Database Query → Run Tests
@@ -82,7 +88,8 @@ Code Change → AST Parsing (Rust) → Block Checksums → Database Query → Ru
 | Option | Description |
 |--------|-------------|
 | `--diff` | Enable pytest-diff (select tests based on changes) |
-| `--diff-baseline` | Run all tests and save current state as baseline for change detection |
+| `--diff-baseline` | Compute baseline. First run executes all tests; subsequent runs are incremental (only affected tests) |
+| `--diff-force` | Force running all tests (use with `--diff-baseline` to rebuild from scratch) |
 | `--diff-v` | Enable verbose logging (shows timing and debug info) |
 | `--diff-batch-size N` | Number of test executions to batch before DB write (default: 20) |
 | `--diff-cache-size N` | Maximum fingerprints to cache in memory (default: 100000) |
@@ -93,8 +100,11 @@ Code Change → AST Parsing (Rust) → Block Checksums → Database Query → Ru
 # Run only tests affected by your changes
 pytest --diff
 
-# Save baseline (run all tests, record current state)
+# Save baseline (first run: all tests; subsequent runs: only affected tests)
 pytest --diff-baseline
+
+# Force a full baseline rebuild
+pytest --diff-baseline --diff-force
 
 # Save baseline and upload to S3
 pytest --diff-baseline --diff-upload --diff-remote "s3://my-bucket/pytest-diff/"

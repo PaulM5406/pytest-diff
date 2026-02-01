@@ -5,13 +5,12 @@ Test baseline fingerprint functionality and revert scenarios
 import tempfile
 from pathlib import Path
 
-import pytest
-
 
 def test_baseline_revert_scenario():
     """Test that reverting changes is properly detected with baseline"""
-    from pytest_diff import _core
     import time
+
+    from pytest_diff import _core
 
     with tempfile.TemporaryDirectory() as tmpdir:
         tmpdir = Path(tmpdir)

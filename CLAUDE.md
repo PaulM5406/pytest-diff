@@ -10,7 +10,10 @@
 
 ## Verification
 
-Always run these checks before considering work done:
+Always :
+
+- keep README up to date
+- run these checks before considering work done:
 
 ```bash
 # Rebuild Rust extension

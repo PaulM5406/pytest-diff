@@ -53,6 +53,43 @@ def test_unmodified_module_tests_deselected(multi_module_project):
     result.stdout.fnmatch_lines(["*deselected*"])
 
 
+def test_diff_keeps_selecting_affected_tests_until_rebaseline(baselined_project):
+    """Running --diff repeatedly after a change keeps selecting affected tests.
+
+    Regression test: previously, the first --diff run would save new fingerprints
+    reflecting the modified file state, causing subsequent --diff runs to see
+    no affected tests (the old baseline checksums were no longer in file_fp).
+    """
+    # Modify the calculator module
+    time.sleep(0.01)
+    calc = baselined_project.path / "mylib" / "calculator.py"
+    calc.write_text(
+        "def add(a, b):\n"
+        "    return a + b + 0  # modified\n"
+        "\n"
+        "def multiply(a, b):\n"
+        "    return a * b\n"
+    )
+
+    # First --diff run: should detect the change and run affected tests
+    result = baselined_project.runpytest_subprocess("--diff", "-v")
+    result.stdout.fnmatch_lines(["*modified*"])
+    result.stdout.fnmatch_lines(["*affected*"])
+
+    # Second --diff run: should STILL detect and run affected tests
+    result = baselined_project.runpytest_subprocess("--diff", "-v")
+    result.stdout.fnmatch_lines(["*modified*"])
+    result.stdout.fnmatch_lines(["*affected*"])
+
+    # After re-baselining (incremental: only affected tests run), --diff should skip all
+    result = baselined_project.runpytest_subprocess("--diff-baseline", "-v")
+    result.stdout.fnmatch_lines(["*Incremental baseline*"])
+
+    result = baselined_project.runpytest_subprocess("--diff", "-v")
+    result.stdout.fnmatch_lines(["*No changes detected*"])
+    result.assert_outcomes()
+
+
 def test_multiple_diff_runs_stable(baselined_project):
     """Running --diff 3x without changes always skips all."""
     for _ in range(3):

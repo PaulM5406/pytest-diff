@@ -26,6 +26,7 @@ class TestmonPlugin:
     def __init__(self, config):
         self.config = config
         self.baseline = config.getoption("--diff-baseline", False)
+        self.force = config.getoption("--diff-force", False)
         self.enabled = config.getoption("--diff", False) or self.baseline
         self.verbose = config.getoption("--diff-v", False)
         self.upload = config.getoption("--diff-upload", False)
@@ -376,10 +377,52 @@ class TestmonPlugin:
 
     def pytest_collection_modifyitems(self, config, items):
         """Select tests based on code changes"""
-        if not self.enabled or self.baseline:
-            # Skip selection when:
-            # - Not enabled
-            # - Running in baseline mode (need to run all tests to set baseline)
+        if not self.enabled:
+            return
+
+        if self.baseline and not self.force:
+            # Incremental baseline: if DB already has test data, only run affected tests
+            assert self.db is not None
+            stats = self.db.get_stats()
+            if stats.get("test_count", 0) > 0:
+                try:
+                    changed = _core.detect_changes(
+                        str(self.db_path), str(config.rootdir), self.scope_paths
+                    )
+                    if changed.has_changes():
+                        print(
+                            f"\n✓ pytest-diff: Incremental baseline — {len(changed.modified)} modified files"
+                        )
+                        affected_tests = self.db.get_affected_tests(changed.changed_blocks)
+                        if affected_tests:
+                            selected = [item for item in items if item.nodeid in affected_tests]
+                            self.deselected_items = [item for item in items if item not in selected]
+                            items[:] = selected
+                            print(f"  Running {len(selected)} affected tests")
+                            print(f"  Skipping {len(self.deselected_items)} unaffected tests")
+                            if self.deselected_items:
+                                config.hook.pytest_deselected(items=self.deselected_items)
+                        else:
+                            # Changes detected but no tests affected — skip all
+                            print("\n✓ pytest-diff: Incremental baseline — no tests affected")
+                            self.deselected_items = items[:]
+                            items[:] = []
+                            config.hook.pytest_deselected(items=self.deselected_items)
+                    else:
+                        # No changes — skip all tests
+                        print("\n✓ pytest-diff: No changes detected — skipping all tests")
+                        self.deselected_items = items[:]
+                        items[:] = []
+                        config.hook.pytest_deselected(items=self.deselected_items)
+                except Exception as e:
+                    # On error, fall through to run all tests
+                    print(f"\n⚠ pytest-diff: Error during incremental detection: {e}")
+                    print("  Running all tests")
+                return
+            # else: empty DB, fall through to run all tests
+
+        if self.baseline:
+            # First baseline or --diff-force: run all tests
             return
 
         try:
@@ -454,6 +497,11 @@ class TestmonPlugin:
     def pytest_runtest_makereport(self, item, call):
         """Capture test result and save to database"""
         if not self.enabled:
+            return
+
+        # In --diff mode, don't save test executions — preserve baseline fingerprints
+        # so that changed tests keep being selected until a new baseline is set
+        if not self.baseline:
             return
 
         # Only save after test execution (not setup/teardown)
@@ -656,7 +704,13 @@ def pytest_addoption(parser):
     group.addoption(
         "--diff-baseline",
         action="store_true",
-        help="Run all tests and save current state as baseline for change detection",
+        help="Compute baseline. Runs all tests on first use; incremental on subsequent runs. Use --diff-force to run all.",
+    )
+
+    group.addoption(
+        "--diff-force",
+        action="store_true",
+        help="Force running all tests (use with --diff-baseline to rebuild from scratch)",
     )
 
     group.addoption(
@@ -721,6 +775,10 @@ def pytest_addoption(parser):
 
 def pytest_configure(config):
     """Register the plugin"""
-    if config.getoption("--diff") or config.getoption("--diff-baseline"):
+    if (
+        config.getoption("--diff")
+        or config.getoption("--diff-baseline")
+        or config.getoption("--diff-force")
+    ):
         plugin = TestmonPlugin(config)
         config.pluginmanager.register(plugin, "pytest_diff")

@@ -1,5 +1,7 @@
 # pytest-diff
 
+> **Warning:** This project is still a work in progress. APIs and behavior may change without notice.
+
 **Blazingly fast test selection for pytest** - Only run tests affected by your changes, powered by Rust 🦀
 
 [![CI](https://github.com/paulmilesi/pytest-diff/workflows/CI/badge.svg)](https://github.com/paulmilesi/pytest-diff/actions)

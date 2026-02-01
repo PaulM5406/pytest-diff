@@ -229,11 +229,6 @@ MIT License - see [LICENSE](LICENSE) file for details.
 - Built with [Ruff's Python parser](https://github.com/astral-sh/ruff)
 - Powered by [PyO3](https://github.com/PyO3/pyo3) and [Maturin](https://github.com/PyO3/maturin)
 
-## Support
-
-- 🐛 [Issue Tracker](https://github.com/paulmilesi/pytest-diff/issues)
-- 💬 [Discussions](https://github.com/paulmilesi/pytest-diff/discussions)
-
 ---
 
 **Made with ❤️**

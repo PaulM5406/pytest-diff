@@ -3,7 +3,7 @@
 
 [tools]
 python = "3.12"
-rust = "1.75"
+rust = "1.93"
 uv = "latest"
 
 [env]

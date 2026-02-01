@@ -1,6 +1,6 @@
 # pytest-diff
 
-> **Warning:** This project is still a work in progress. APIs and behavior may change without notice.
+> **⚠️** This project is still a work in progress. APIs and behavior may change without notice.
 
 **Fast test selection for pytest** - Only run tests affected by your changes, powered by Rust 🦀
 

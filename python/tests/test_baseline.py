@@ -22,7 +22,7 @@ def test_baseline_revert_scenario():
 
         # Step 1: Write original code and save baseline
         module_file.write_text(original_code)
-        db_path = tmpdir / ".testmondata"
+        db_path = tmpdir / "pytest_diff.db"
         scope_paths = [str(tmpdir)]
         count = _core.save_baseline(str(db_path), str(tmpdir), False, scope_paths)
         assert count == 1, "Should save baseline for 1 file"
@@ -67,7 +67,7 @@ def test_save_baseline_function():
         (tmpdir / "subdir").mkdir()
         (tmpdir / "subdir" / "module3.py").write_text("def baz(): pass")
 
-        db_path = tmpdir / ".testmondata"
+        db_path = tmpdir / "pytest_diff.db"
         scope_paths = [str(tmpdir)]
 
         # Save baseline
@@ -75,7 +75,7 @@ def test_save_baseline_function():
         assert count == 3, f"Should save baseline for 3 files, got {count}"
 
         # Open database and verify baselines were saved
-        db = _core.TestmonDatabase(str(db_path))
+        db = _core.PytestDiffDatabase(str(db_path))
         stats = db.get_stats()
         assert stats["baseline_count"] == 3, "Should have 3 baselines in database"
 
@@ -92,7 +92,7 @@ def test_baseline_detects_no_change_on_revert():
         original = "def add(a, b):\n    return a + b\n"
         module.write_text(original)
 
-        db_path = tmpdir / ".testmondata"
+        db_path = tmpdir / "pytest_diff.db"
         scope_paths = [str(tmpdir)]
 
         # Save baseline with original code

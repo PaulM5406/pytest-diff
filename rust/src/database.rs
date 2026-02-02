@@ -23,19 +23,19 @@ const BUSY_TIMEOUT_MS: i32 = 30_000; // 30 seconds
 
 /// Main database interface for pytest-diff
 ///
-/// Manages the .testmondata SQLite database with optimizations:
+/// Manages the pytest-diff SQLite database with optimizations:
 /// - WAL mode for concurrent access
 /// - Prepared statement caching
 /// - Memory-mapped I/O
 /// - In-memory cache for frequently accessed data
 #[pyclass(unsendable)]
-pub struct TestmonDatabase {
+pub struct PytestDiffDatabase {
     conn: Arc<RwLock<Connection>>,
     cache: Arc<Cache>,
     current_environment_id: Arc<RwLock<Option<i64>>>,
 }
 
-impl TestmonDatabase {
+impl PytestDiffDatabase {
     /// Create a new database connection (public Rust API)
     pub fn open(path: &str) -> Result<Self> {
         Self::new_internal(path)
@@ -261,7 +261,7 @@ impl TestmonDatabase {
 }
 
 #[pymethods]
-impl TestmonDatabase {
+impl PytestDiffDatabase {
     #[new]
     fn new(path: &str) -> PyResult<Self> {
         Self::new_internal(path).map_err(|e| {
@@ -363,13 +363,9 @@ impl TestmonDatabase {
     /// Clear all baseline fingerprints
     fn clear_baseline(&mut self) -> PyResult<()> {
         let conn = self.conn.write();
-        conn.execute("DELETE FROM baseline_fp", [])
-            .map_err(|e| {
-                pyo3::exceptions::PyRuntimeError::new_err(format!(
-                    "Failed to clear baseline: {}",
-                    e
-                ))
-            })?;
+        conn.execute("DELETE FROM baseline_fp", []).map_err(|e| {
+            pyo3::exceptions::PyRuntimeError::new_err(format!("Failed to clear baseline: {}", e))
+        })?;
         Ok(())
     }
 
@@ -418,7 +414,7 @@ impl TestmonDatabase {
 }
 
 // Internal implementation methods
-impl TestmonDatabase {
+impl PytestDiffDatabase {
     fn save_test_execution_internal(
         &mut self,
         test_name: &str,
@@ -542,9 +538,7 @@ impl TestmonDatabase {
         // Pre-compute changed checksums as HashSets for O(1) lookup
         let changed_checksum_sets: HashMap<&str, HashSet<i32>> = changed_blocks
             .iter()
-            .map(|(filename, checksums)| {
-                (filename.as_str(), checksums.iter().copied().collect())
-            })
+            .map(|(filename, checksums)| (filename.as_str(), checksums.iter().copied().collect()))
             .collect();
 
         // Cache deserialized blobs to avoid re-deserializing the same blob
@@ -626,7 +620,10 @@ impl TestmonDatabase {
     }
 
     /// Batch save multiple baseline fingerprints in a single transaction
-    pub fn save_baseline_fingerprints_batch(&mut self, fingerprints: Vec<Fingerprint>) -> Result<usize> {
+    pub fn save_baseline_fingerprints_batch(
+        &mut self,
+        fingerprints: Vec<Fingerprint>,
+    ) -> Result<usize> {
         let mut conn = self.conn.write();
 
         // Start transaction
@@ -661,24 +658,22 @@ impl TestmonDatabase {
         let conn = self.conn.write();
 
         // Attach the source database
-        conn.execute(
-            "ATTACH DATABASE ?1 AS source_db",
-            params![source_db_path],
-        )
-        .with_context(|| format!("Failed to attach source database: {}", source_db_path))?;
+        conn.execute("ATTACH DATABASE ?1 AS source_db", params![source_db_path])
+            .with_context(|| format!("Failed to attach source database: {}", source_db_path))?;
 
         // Clear existing baselines and bulk-copy from source, plus metadata
         let result = (|| -> Result<usize> {
             conn.execute("DELETE FROM baseline_fp", [])
                 .context("Failed to clear existing baselines")?;
 
-            let count = conn.execute(
-                "INSERT INTO baseline_fp (filename, method_checksums, mtime, fsha, created_at)
+            let count = conn
+                .execute(
+                    "INSERT INTO baseline_fp (filename, method_checksums, mtime, fsha, created_at)
                  SELECT filename, method_checksums, mtime, fsha, created_at
                  FROM source_db.baseline_fp",
-                [],
-            )
-            .context("Failed to copy baselines from source")?;
+                    [],
+                )
+                .context("Failed to copy baselines from source")?;
 
             // Also copy metadata rows from source (e.g. baseline_commit SHA)
             conn.execute(
@@ -750,9 +745,8 @@ impl TestmonDatabase {
     pub fn get_all_baseline_fingerprints(&self) -> Result<HashMap<String, Fingerprint>> {
         let conn = self.conn.read();
 
-        let mut stmt = conn.prepare(
-            "SELECT filename, method_checksums, mtime, fsha FROM baseline_fp"
-        )?;
+        let mut stmt =
+            conn.prepare("SELECT filename, method_checksums, mtime, fsha FROM baseline_fp")?;
 
         let fingerprints = stmt
             .query_map([], |row| {
@@ -760,13 +754,16 @@ impl TestmonDatabase {
                 let checksums_blob: Vec<u8> = row.get(1)?;
                 let checksums = deserialize_checksums(&checksums_blob);
 
-                Ok((filename.clone(), Fingerprint {
-                    filename,
-                    checksums,
-                    mtime: row.get(2)?,
-                    file_hash: row.get(3)?,
-                    blocks: None,
-                }))
+                Ok((
+                    filename.clone(),
+                    Fingerprint {
+                        filename,
+                        checksums,
+                        mtime: row.get(2)?,
+                        file_hash: row.get(3)?,
+                        blocks: None,
+                    },
+                ))
             })?
             .filter_map(|r| r.ok())
             .collect();
@@ -795,14 +792,14 @@ mod tests {
     #[test]
     fn test_database_creation() {
         let temp_db = NamedTempFile::new().unwrap();
-        let db = TestmonDatabase::new_internal(temp_db.path().to_str().unwrap());
+        let db = PytestDiffDatabase::new_internal(temp_db.path().to_str().unwrap());
         assert!(db.is_ok());
     }
 
     #[test]
     fn test_save_and_retrieve_fingerprint() {
         let temp_db = NamedTempFile::new().unwrap();
-        let db = TestmonDatabase::new_internal(temp_db.path().to_str().unwrap()).unwrap();
+        let db = PytestDiffDatabase::new_internal(temp_db.path().to_str().unwrap()).unwrap();
 
         let fp = Fingerprint {
             filename: "test.py".to_string(),
@@ -823,7 +820,7 @@ mod tests {
     #[test]
     fn test_save_test_execution() {
         let temp_db = NamedTempFile::new().unwrap();
-        let mut db = TestmonDatabase::new_internal(temp_db.path().to_str().unwrap()).unwrap();
+        let mut db = PytestDiffDatabase::new_internal(temp_db.path().to_str().unwrap()).unwrap();
 
         let fp = Fingerprint {
             filename: "test.py".to_string(),
@@ -855,7 +852,7 @@ mod tests {
         // Create source database with baseline fingerprints
         let source_db_file = NamedTempFile::new().unwrap();
         let mut source_db =
-            TestmonDatabase::new_internal(source_db_file.path().to_str().unwrap()).unwrap();
+            PytestDiffDatabase::new_internal(source_db_file.path().to_str().unwrap()).unwrap();
 
         let fp1 = Fingerprint {
             filename: "src/foo.py".to_string(),
@@ -879,7 +876,7 @@ mod tests {
         // Create target database (empty)
         let target_db_file = NamedTempFile::new().unwrap();
         let mut target_db =
-            TestmonDatabase::new_internal(target_db_file.path().to_str().unwrap()).unwrap();
+            PytestDiffDatabase::new_internal(target_db_file.path().to_str().unwrap()).unwrap();
 
         // Verify target has no baselines
         let stats = target_db.get_stats_internal().unwrap();
@@ -906,7 +903,7 @@ mod tests {
     #[test]
     fn test_import_baseline_from_nonexistent() {
         let temp_db = NamedTempFile::new().unwrap();
-        let mut db = TestmonDatabase::new_internal(temp_db.path().to_str().unwrap()).unwrap();
+        let mut db = PytestDiffDatabase::new_internal(temp_db.path().to_str().unwrap()).unwrap();
 
         let result = db.import_baseline_from_internal("/nonexistent/path.db");
         assert!(result.is_err());
@@ -915,20 +912,22 @@ mod tests {
     #[test]
     fn test_metadata_set_and_get() {
         let temp_db = NamedTempFile::new().unwrap();
-        let db = TestmonDatabase::new_internal(temp_db.path().to_str().unwrap()).unwrap();
+        let db = PytestDiffDatabase::new_internal(temp_db.path().to_str().unwrap()).unwrap();
 
         // Initially missing
         assert_eq!(db.get_metadata_internal("baseline_commit").unwrap(), None);
 
         // Set and retrieve
-        db.set_metadata_internal("baseline_commit", "abc123def").unwrap();
+        db.set_metadata_internal("baseline_commit", "abc123def")
+            .unwrap();
         assert_eq!(
             db.get_metadata_internal("baseline_commit").unwrap(),
             Some("abc123def".to_string())
         );
 
         // Overwrite
-        db.set_metadata_internal("baseline_commit", "new_sha").unwrap();
+        db.set_metadata_internal("baseline_commit", "new_sha")
+            .unwrap();
         assert_eq!(
             db.get_metadata_internal("baseline_commit").unwrap(),
             Some("new_sha".to_string())
@@ -940,7 +939,7 @@ mod tests {
         // Create source database with baseline + metadata
         let source_db_file = NamedTempFile::new().unwrap();
         let mut source_db =
-            TestmonDatabase::new_internal(source_db_file.path().to_str().unwrap()).unwrap();
+            PytestDiffDatabase::new_internal(source_db_file.path().to_str().unwrap()).unwrap();
 
         let fp = Fingerprint {
             filename: "src/foo.py".to_string(),
@@ -958,7 +957,7 @@ mod tests {
         // Create target database
         let target_db_file = NamedTempFile::new().unwrap();
         let mut target_db =
-            TestmonDatabase::new_internal(target_db_file.path().to_str().unwrap()).unwrap();
+            PytestDiffDatabase::new_internal(target_db_file.path().to_str().unwrap()).unwrap();
 
         // Verify no metadata initially
         assert_eq!(
@@ -981,7 +980,7 @@ mod tests {
     #[test]
     fn test_get_affected_tests() {
         let temp_db = NamedTempFile::new().unwrap();
-        let mut db = TestmonDatabase::new_internal(temp_db.path().to_str().unwrap()).unwrap();
+        let mut db = PytestDiffDatabase::new_internal(temp_db.path().to_str().unwrap()).unwrap();
 
         let fp = Fingerprint {
             filename: "module.py".to_string(),

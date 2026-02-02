@@ -29,6 +29,19 @@ jobs:
       - run: uv sync --no-install-project --all-extras --dev
       - run: uv run --no-project ty check python/
 
+  rust-lint:
+    name: Rust lint & format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.93"
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --check
+      - run: cargo clippy --lib -- -D warnings
+
   rust-tests:
     name: Rust tests
     runs-on: ubuntu-latest

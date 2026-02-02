@@ -68,7 +68,7 @@ def test_fingerprint_cache_eviction(tmp_path):
 def test_database_stats_empty(tmp_path):
     """New DB has test_count=0, file_count=0, baseline_count=0."""
     db_path = tmp_path / "test.db"
-    db = _core.TestmonDatabase(str(db_path))
+    db = _core.PytestDiffDatabase(str(db_path))
     stats = db.get_stats()
     assert stats["test_count"] == 0
     assert stats["file_count"] == 0
@@ -79,7 +79,7 @@ def test_detect_changes_no_baseline(tmp_path):
     """No baseline means no changes detected."""
     db_path = tmp_path / "test.db"
     # Create the DB so detect_changes doesn't fail on missing file
-    _core.TestmonDatabase(str(db_path))
+    _core.PytestDiffDatabase(str(db_path))
 
     f = tmp_path / "module.py"
     f.write_text("def foo(): pass\n")

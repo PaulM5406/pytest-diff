@@ -140,11 +140,7 @@ impl FingerprintCache {
     /// This is fast and provides reasonable eviction behavior.
     fn evict_entries(&self, cache: &mut HashMap<String, (f64, Fingerprint)>) {
         let to_remove = self.max_size / 10;
-        let keys_to_remove: Vec<String> = cache
-            .keys()
-            .take(to_remove.max(1))
-            .cloned()
-            .collect();
+        let keys_to_remove: Vec<String> = cache.keys().take(to_remove.max(1)).cloned().collect();
 
         for key in keys_to_remove {
             cache.remove(&key);

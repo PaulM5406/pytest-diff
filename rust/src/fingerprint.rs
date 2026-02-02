@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 use walkdir::WalkDir;
 
-use crate::database::TestmonDatabase;
+use crate::database::PytestDiffDatabase;
 use crate::parser::parse_module_internal;
 use crate::types::{Block, ChangedFiles, Fingerprint};
 
@@ -76,7 +76,7 @@ pub(crate) fn calculate_fingerprint_internal(path: &str) -> Result<Fingerprint> 
 /// Should be called after tests pass to set the baseline.
 ///
 /// # Arguments
-/// * `db_path` - Path to the .testmondata database
+/// * `db_path` - Path to the pytest-diff database
 /// * `project_root` - Root directory of the project
 /// * `verbose` - Whether to print debug information
 /// * `scope_paths` - List of directory paths to limit the scope (e.g., ["tests/unit/"])
@@ -84,29 +84,52 @@ pub(crate) fn calculate_fingerprint_internal(path: &str) -> Result<Fingerprint> 
 /// # Returns
 /// * Number of files added to baseline
 #[pyfunction]
-pub fn save_baseline(db_path: &str, project_root: &str, verbose: bool, scope_paths: Vec<String>) -> PyResult<usize> {
-    let count = save_baseline_internal(db_path, project_root, verbose, scope_paths).map_err(|e| {
-        pyo3::exceptions::PyRuntimeError::new_err(format!("Failed to save baseline: {}", e))
-    })?;
+pub fn save_baseline(
+    db_path: &str,
+    project_root: &str,
+    verbose: bool,
+    scope_paths: Vec<String>,
+) -> PyResult<usize> {
+    let count =
+        save_baseline_internal(db_path, project_root, verbose, scope_paths).map_err(|e| {
+            pyo3::exceptions::PyRuntimeError::new_err(format!("Failed to save baseline: {}", e))
+        })?;
 
     Ok(count)
 }
 
-fn save_baseline_internal(db_path: &str, project_root: &str, verbose: bool, scope_paths: Vec<String>) -> Result<usize> {
-    use std::time::Instant;
+fn save_baseline_internal(
+    db_path: &str,
+    project_root: &str,
+    verbose: bool,
+    scope_paths: Vec<String>,
+) -> Result<usize> {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
+    use std::time::Instant;
 
     let start = Instant::now();
-    let mut db = TestmonDatabase::open(db_path)?;
+    let mut db = PytestDiffDatabase::open(db_path)?;
     if verbose {
-        eprintln!("[rust] Database opened in {:.3}s", start.elapsed().as_secs_f64());
+        eprintln!(
+            "[rust] Database opened in {:.3}s",
+            start.elapsed().as_secs_f64()
+        );
     }
 
     let find_start = Instant::now();
     let python_files = find_python_files(project_root, &scope_paths)?;
+    eprint!(
+        "\rpytest-diff: Scanning {} Python files...",
+        python_files.len()
+    );
     if verbose {
-        eprintln!("[rust] Found {} Python files in {:.3}s", python_files.len(), find_start.elapsed().as_secs_f64());
+        eprintln!();
+        eprintln!(
+            "[rust] Found {} Python files in {:.3}s",
+            python_files.len(),
+            find_start.elapsed().as_secs_f64()
+        );
     }
 
     // Load ALL existing baselines in a single query (much faster than N queries)
@@ -114,8 +137,11 @@ fn save_baseline_internal(db_path: &str, project_root: &str, verbose: bool, scop
     let existing_baselines = db.get_all_baseline_fingerprints()?;
 
     if verbose {
-        eprintln!("[rust] Loaded {} existing baselines in {:.3}s (single query)",
-                 existing_baselines.len(), baseline_start.elapsed().as_secs_f64());
+        eprintln!(
+            "[rust] Loaded {} existing baselines in {:.3}s (single query)",
+            existing_baselines.len(),
+            baseline_start.elapsed().as_secs_f64()
+        );
     }
 
     let processing_start = Instant::now();
@@ -137,11 +163,18 @@ fn save_baseline_internal(db_path: &str, project_root: &str, verbose: bool, scop
             let path_str = path.to_string_lossy().to_string();
 
             // Update progress counter
-            if verbose {
-                let count = progress_counter.fetch_add(1, Ordering::Relaxed) + 1;
-                if count % 50 == 0 {
-                    eprintln!("[rust] Processed {}/{} files ({:.1}%)",
-                             count, total_files, count as f64 / total_files as f64 * 100.0);
+            let count = progress_counter.fetch_add(1, Ordering::Relaxed) + 1;
+            // Print progress every 200 files (or every 50 in verbose mode)
+            let interval = if verbose { 50 } else { 200 };
+            if count % interval == 0 || count == total_files {
+                eprint!(
+                    "\rpytest-diff: Fingerprinting files... {}/{} ({:.0}%)  ",
+                    count,
+                    total_files,
+                    count as f64 / total_files as f64 * 100.0
+                );
+                if verbose {
+                    eprintln!();
                 }
             }
 
@@ -165,9 +198,11 @@ fn save_baseline_internal(db_path: &str, project_root: &str, verbose: bool, scop
 
             // Log slow files
             if verbose && fp_start.elapsed().as_millis() > 100 {
-                eprintln!("[rust]   Fingerprint for {} took {:.3}s",
-                         path.file_name().unwrap_or_default().to_string_lossy(),
-                         fp_start.elapsed().as_secs_f64());
+                eprintln!(
+                    "[rust]   Fingerprint for {} took {:.3}s",
+                    path.file_name().unwrap_or_default().to_string_lossy(),
+                    fp_start.elapsed().as_secs_f64()
+                );
             }
 
             match result {
@@ -183,10 +218,23 @@ fn save_baseline_internal(db_path: &str, project_root: &str, verbose: bool, scop
         .collect();
 
     let unchanged_count = skipped_unchanged.load(Ordering::Relaxed);
+    let changed_file_count = total_files - unchanged_count;
+    // Clear the progress line
+    eprint!(
+        "\rpytest-diff: Fingerprinted {} files ({} changed, {} unchanged) in {:.1}s\n",
+        total_files,
+        changed_file_count,
+        unchanged_count,
+        fp_calc_start.elapsed().as_secs_f64()
+    );
     if verbose {
-        eprintln!("[rust] Processed {} files in {:.3}s ({} unchanged, {} need update)",
-                 total_files, fp_calc_start.elapsed().as_secs_f64(),
-                 unchanged_count, total_files - unchanged_count);
+        eprintln!(
+            "[rust] Processed {} files in {:.3}s ({} unchanged, {} need update)",
+            total_files,
+            fp_calc_start.elapsed().as_secs_f64(),
+            unchanged_count,
+            changed_file_count
+        );
     }
 
     // SEQUENTIAL: Save only changed fingerprints to database
@@ -202,18 +250,34 @@ fn save_baseline_internal(db_path: &str, project_root: &str, verbose: bool, scop
     }
 
     let changed_count = fingerprints_to_save.len();
+    if changed_count > 0 {
+        eprint!(
+            "pytest-diff: Writing {} fingerprints to database...",
+            changed_count
+        );
+    }
     let count = if changed_count > 0 {
-        db.save_baseline_fingerprints_batch(fingerprints_to_save)?
+        let c = db.save_baseline_fingerprints_batch(fingerprints_to_save)?;
+        eprintln!(" done ({:.1}s)", db_save_start.elapsed().as_secs_f64());
+        c
     } else {
         0
     };
 
     if verbose {
-        eprintln!("[rust] Saved {} changed fingerprints to DB in {:.3}s",
-                 count, db_save_start.elapsed().as_secs_f64());
-        eprintln!("[rust] Total processing time: {:.3}s", processing_start.elapsed().as_secs_f64());
-        eprintln!("[rust] Summary: {} total, {} unchanged (skipped), {} updated",
-                 total_files, unchanged_count, count);
+        eprintln!(
+            "[rust] Saved {} changed fingerprints to DB in {:.3}s",
+            count,
+            db_save_start.elapsed().as_secs_f64()
+        );
+        eprintln!(
+            "[rust] Total processing time: {:.3}s",
+            processing_start.elapsed().as_secs_f64()
+        );
+        eprintln!(
+            "[rust] Summary: {} total, {} unchanged (skipped), {} updated",
+            total_files, unchanged_count, count
+        );
     }
 
     // Checkpoint WAL to remove -wal and -shm files
@@ -231,14 +295,18 @@ fn save_baseline_internal(db_path: &str, project_root: &str, verbose: bool, scop
 /// 3. block checksum comparison (precise - per-function/class checksums)
 ///
 /// # Arguments
-/// * `db_path` - Path to the .testmondata database
+/// * `db_path` - Path to the pytest-diff database
 /// * `project_root` - Root directory of the project
 /// * `scope_paths` - List of directory paths to limit the scope (e.g., ["tests/unit/"])
 ///
 /// # Returns
 /// * ChangedFiles containing list of modified files and changed blocks
 #[pyfunction]
-pub fn detect_changes(db_path: &str, project_root: &str, scope_paths: Vec<String>) -> PyResult<ChangedFiles> {
+pub fn detect_changes(
+    db_path: &str,
+    project_root: &str,
+    scope_paths: Vec<String>,
+) -> PyResult<ChangedFiles> {
     let changes = detect_changes_internal(db_path, project_root, scope_paths).map_err(|e| {
         pyo3::exceptions::PyRuntimeError::new_err(format!("Failed to detect changes: {}", e))
     })?;
@@ -246,9 +314,13 @@ pub fn detect_changes(db_path: &str, project_root: &str, scope_paths: Vec<String
     Ok(changes)
 }
 
-fn detect_changes_internal(db_path: &str, project_root: &str, scope_paths: Vec<String>) -> Result<ChangedFiles> {
+fn detect_changes_internal(
+    db_path: &str,
+    project_root: &str,
+    scope_paths: Vec<String>,
+) -> Result<ChangedFiles> {
     // Open database
-    let db = TestmonDatabase::open(db_path)?;
+    let db = PytestDiffDatabase::open(db_path)?;
 
     // Find all Python files in the project
     let python_files = find_python_files(project_root, &scope_paths)?;
@@ -260,13 +332,13 @@ fn detect_changes_internal(db_path: &str, project_root: &str, scope_paths: Vec<S
     // Now that we have all baselines in memory, we don't need DB access per file
     let changed_entries: Vec<_> = python_files
         .par_iter()
-        .filter_map(|path| {
-            match check_file_changed_with_baseline(&baselines, path) {
+        .filter_map(
+            |path| match check_file_changed_with_baseline(&baselines, path) {
                 Ok(Some(change)) => Some(change),
                 Ok(None) => None,
                 Err(_) => None,
-            }
-        })
+            },
+        )
         .collect();
 
     // Separate modified files from changed blocks
@@ -386,24 +458,24 @@ fn find_python_files(root: &str, scope_paths: &[String]) -> Result<Vec<PathBuf>>
             // Determine if this is a test file
             let filename = abs_path.file_name().and_then(|s| s.to_str()).unwrap_or("");
             let is_test_filename = filename.starts_with("test_") || filename.ends_with("_test.py");
-            let in_tests_dir = abs_path
-                .components()
-                .any(|c| {
-                    if let std::path::Component::Normal(name) = c {
-                        let name_str = name.to_string_lossy();
-                        name_str == "tests" || name_str == "test"
-                    } else {
-                        false
-                    }
-                });
+            let in_tests_dir = abs_path.components().any(|c| {
+                if let std::path::Component::Normal(name) = c {
+                    let name_str = name.to_string_lossy();
+                    name_str == "tests" || name_str == "test"
+                } else {
+                    false
+                }
+            });
             let is_test_file = is_test_filename || in_tests_dir;
 
             // Scope paths only apply to test files
             // Source files are always included
             if is_test_file && !scope_paths_abs.is_empty() {
-                let in_scope = scope_paths_abs.iter().any(|scope| abs_path.starts_with(scope));
+                let in_scope = scope_paths_abs
+                    .iter()
+                    .any(|scope| abs_path.starts_with(scope));
                 if !in_scope {
-                    continue;  // Skip test files outside scope
+                    continue; // Skip test files outside scope
                 }
             }
 
@@ -460,13 +532,17 @@ pub fn process_coverage_data(
     scope_paths: Vec<String>,
     cache: Option<&crate::fingerprint_cache::FingerprintCache>,
 ) -> PyResult<Vec<Fingerprint>> {
-    let fingerprints = process_coverage_data_internal(coverage_data, project_root, test_file, verbose, scope_paths, cache)
-        .map_err(|e| {
-            pyo3::exceptions::PyRuntimeError::new_err(format!(
-                "Failed to process coverage data: {}",
-                e
-            ))
-        })?;
+    let fingerprints = process_coverage_data_internal(
+        coverage_data,
+        project_root,
+        test_file,
+        verbose,
+        scope_paths,
+        cache,
+    )
+    .map_err(|e| {
+        pyo3::exceptions::PyRuntimeError::new_err(format!("Failed to process coverage data: {}", e))
+    })?;
 
     Ok(fingerprints)
 }
@@ -485,7 +561,8 @@ fn process_coverage_data_internal(
     // Convert scope paths to absolute PathBufs for comparison
     // If scope_paths is empty, use project_root as the default scope
     let scope_paths_abs: Vec<PathBuf> = if scope_paths.is_empty() {
-        vec![std::fs::canonicalize(project_root_path).unwrap_or_else(|_| project_root_path.to_path_buf())]
+        vec![std::fs::canonicalize(project_root_path)
+            .unwrap_or_else(|_| project_root_path.to_path_buf())]
     } else {
         scope_paths
             .iter()
@@ -503,7 +580,12 @@ fn process_coverage_data_internal(
             let filepath = Path::new(filename);
 
             // 1. File filtering - only include relevant Python files
-            if !should_process_file(filepath, project_root_path, test_file_path, &scope_paths_abs) {
+            if !should_process_file(
+                filepath,
+                project_root_path,
+                test_file_path,
+                &scope_paths_abs,
+            ) {
                 return None;
             }
 
@@ -571,7 +653,12 @@ fn process_coverage_data_internal(
 }
 
 /// Check if a file should be processed based on filtering rules
-fn should_process_file(filepath: &Path, project_root: &Path, test_file: &Path, scope_paths: &[PathBuf]) -> bool {
+fn should_process_file(
+    filepath: &Path,
+    project_root: &Path,
+    test_file: &Path,
+    scope_paths: &[PathBuf],
+) -> bool {
     // Must be a .py file
     if filepath.extension().and_then(|s| s.to_str()) != Some("py") {
         return false;
@@ -588,16 +675,14 @@ fn should_process_file(filepath: &Path, project_root: &Path, test_file: &Path, s
     let is_test_filename = filename.starts_with("test_") || filename.ends_with("_test.py");
 
     // Check if any parent directory is named "tests" or "test"
-    let in_tests_dir = filepath
-        .components()
-        .any(|c| {
-            if let std::path::Component::Normal(name) = c {
-                let name_str = name.to_string_lossy();
-                name_str == "tests" || name_str == "test"
-            } else {
-                false
-            }
-        });
+    let in_tests_dir = filepath.components().any(|c| {
+        if let std::path::Component::Normal(name) = c {
+            let name_str = name.to_string_lossy();
+            name_str == "tests" || name_str == "test"
+        } else {
+            false
+        }
+    });
 
     let is_test_file = is_test_filename || in_tests_dir;
     let is_current_test_file = filepath == test_file;
@@ -626,7 +711,7 @@ fn should_process_file(filepath: &Path, project_root: &Path, test_file: &Path, s
 
 /// Filter blocks to only those where at least one line was executed
 ///
-/// This implements testmon-style block-level granularity in Rust for performance:
+/// This implements block-level granularity in Rust for performance:
 /// - Only blocks that were actually executed are tracked as dependencies
 /// - If function_a() is never called, changing it won't re-run this test
 ///

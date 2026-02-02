@@ -9,7 +9,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-
 # Coverage module will be imported when needed (not at module level)
 # to avoid caching None if not installed during initial import
 
@@ -20,7 +19,7 @@ except ImportError:
     _core = None  # type: ignore[assignment]  # Allow import before building
 
 
-class TestmonPlugin:
+class PytestDiffPlugin:
     """Main plugin class for pytest-diff"""
 
     def __init__(self, config):
@@ -50,7 +49,7 @@ class TestmonPlugin:
         cache_dir = Path(config.rootdir) / ".pytest_cache" / "pytest-diff"
         cache_dir.mkdir(parents=True, exist_ok=True)
         self.db_path = cache_dir / "pytest_diff.db"
-        self.db: _core.TestmonDatabase | None = None
+        self.db: _core.PytestDiffDatabase | None = None
         self.cov = None
         self.fp_cache: _core.FingerprintCache | None = (
             None  # Fingerprint cache for avoiding re-parsing
@@ -178,7 +177,7 @@ class TestmonPlugin:
         """
         import subprocess
 
-        current_sha = TestmonPlugin._get_git_commit_sha(rootdir)
+        current_sha = PytestDiffPlugin._get_git_commit_sha(rootdir)
         if current_sha is None:
             return None
 
@@ -220,12 +219,14 @@ class TestmonPlugin:
 
         import time
 
+        batch_len = len(self.test_execution_batch)
+        print(f"\rpytest-diff: Saving {batch_len} test executions to DB...", end="", flush=True)
         flush_start = time.time()
         for nodeid, fingerprints, duration, failed in self.test_execution_batch:
             self.db.save_test_execution(nodeid, fingerprints, duration, failed, self.python_version)
-        self._log(
-            f"Flushed {len(self.test_execution_batch)} test executions to DB in {time.time() - flush_start:.3f}s"
-        )
+        elapsed = time.time() - flush_start
+        print(f"\rpytest-diff: Saved {batch_len} test executions to DB in {elapsed:.1f}s")
+        self._log(f"Flushed {batch_len} test executions to DB in {elapsed:.3f}s")
         self.test_execution_batch = []
 
     def _init_storage(self):
@@ -300,14 +301,15 @@ class TestmonPlugin:
             upload_start = time.time()
             self.storage.upload(self.db_path, self.remote_key)
             self._log(f"Uploaded baseline in {time.time() - upload_start:.3f}s")
-            print(f"✓ pytest-diff: Uploaded baseline to {self.remote_url}{self.remote_key}")
+            url = self.remote_url.rstrip("/") + "/" + self.remote_key.lstrip("/")
+            print(f"✓ pytest-diff: Uploaded baseline to {url}")
         except Exception as e:
             print(f"⚠ pytest-diff: Failed to upload baseline: {e}")
 
     def pytest_configure(self, config):
         """Initialize database and coverage collector"""
         if config.option.verbose >= 2:
-            print(f"\n[DEBUG] TestmonPlugin.pytest_configure called, enabled={self.enabled}")
+            print(f"\n[DEBUG] PytestDiffPlugin.pytest_configure called, enabled={self.enabled}")
 
         if not self.enabled:
             return
@@ -320,7 +322,7 @@ class TestmonPlugin:
         # Initialize Rust components
         try:
             db_start = time.time()
-            self.db = _core.TestmonDatabase(str(self.db_path))
+            self.db = _core.PytestDiffDatabase(str(self.db_path))
             self._log(f"Database opened in {time.time() - db_start:.3f}s")
             print(f"✓ pytest-diff: Using database at {self.db_path}")
         except Exception as e:
@@ -333,7 +335,7 @@ class TestmonPlugin:
                 else:
                     print(f"  Creating new database at {self.db_path}")
                 db_start = time.time()
-                self.db = _core.TestmonDatabase(str(self.db_path))
+                self.db = _core.PytestDiffDatabase(str(self.db_path))
                 self._log(f"Database created in {time.time() - db_start:.3f}s")
             except Exception as e2:
                 print(f"⚠ pytest-diff: Failed to create database: {e2}")
@@ -633,6 +635,7 @@ class TestmonPlugin:
                 import time
 
                 self._log("Starting baseline save")
+                print("pytest-diff: Saving baseline fingerprints...", flush=True)
                 start = time.time()
                 count = _core.save_baseline(
                     str(self.db_path), str(self.config.rootdir), self.verbose, self.scope_paths
@@ -641,7 +644,7 @@ class TestmonPlugin:
                 self._log(f"Baseline save completed in {elapsed:.3f}s")
                 terminalreporter.write_sep(
                     "=",
-                    f"pytest-diff: Baseline saved for {count} files in {elapsed:.3f}s",
+                    f"pytest-diff: Baseline saved for {count} files in {elapsed:.1f}s",
                     green=True,
                 )
 
@@ -679,9 +682,18 @@ class TestmonPlugin:
         # Close database to checkpoint WAL and remove -wal/-shm files
         if self.db:
             try:
+                print("pytest-diff: Closing database...", end="", flush=True)
+                import time
+
+                close_start = time.time()
                 self.db.close()
+                close_elapsed = time.time() - close_start
+                if close_elapsed > 0.5:
+                    print(f" done ({close_elapsed:.1f}s)")
+                else:
+                    print(" done")
             except Exception:
-                pass  # Ignore close errors
+                print(" done")  # Ignore close errors
 
 
 def pytest_addoption(parser):
@@ -780,5 +792,5 @@ def pytest_configure(config):
         or config.getoption("--diff-baseline")
         or config.getoption("--diff-force")
     ):
-        plugin = TestmonPlugin(config)
+        plugin = PytestDiffPlugin(config)
         config.pluginmanager.register(plugin, "pytest_diff")

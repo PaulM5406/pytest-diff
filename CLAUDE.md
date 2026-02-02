@@ -7,6 +7,8 @@
 - **maturin** builds the Rust extension into the Python package. Run `maturin develop` after any Rust change.
 - **ruff** is the Python linter and formatter (`ruff check python/`, `ruff format python/`).
 - **ty** is the Python type checker (`ty check python/`).
+- **clippy** is the Rust linter. Run `cargo clippy --lib -- -D warnings` and fix any warnings.
+- **rustfmt** is the Rust formatter. Run `cargo fmt` after any Rust change.
 
 ## Verification
 
@@ -24,6 +26,10 @@ pytest
 
 # Rust tests
 cargo test --lib
+
+# Rust lint + format
+cargo clippy --lib -- -D warnings
+cargo fmt --check
 
 # Python lint + format + type check
 ruff check python/

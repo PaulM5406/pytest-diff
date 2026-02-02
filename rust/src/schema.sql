@@ -1,5 +1,4 @@
--- pytest-testmon compatible database schema
--- This schema matches pytest-testmon's structure for compatibility
+-- pytest-diff database schema
 
 -- Metadata table (key-value store for database info)
 CREATE TABLE IF NOT EXISTS metadata (

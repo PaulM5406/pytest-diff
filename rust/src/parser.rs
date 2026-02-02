@@ -43,7 +43,11 @@ pub fn parse_module(source: &str) -> PyResult<Vec<Block>> {
 ///
 /// This ensures the module checksum only changes when module-level code changes,
 /// not when individual function implementations change.
-fn extract_module_skeleton(source: &str, parsed: &[ast::Stmt], locator: &mut RandomLocator) -> Result<String> {
+fn extract_module_skeleton(
+    source: &str,
+    parsed: &[ast::Stmt],
+    locator: &mut RandomLocator,
+) -> Result<String> {
     use ast::Ranged;
 
     let source_lines: Vec<&str> = source.lines().collect();
@@ -346,7 +350,7 @@ fn extract_source_lines(source: &str, start: usize, end: usize) -> Result<String
 
 /// Calculate CRC32 checksum for a string
 ///
-/// Returns a signed i32 to match pytest-testmon's format
+/// Returns a signed i32 checksum
 pub fn calculate_checksum(source: &str) -> i32 {
     let mut hasher = Hasher::new();
     hasher.update(source.as_bytes());
@@ -470,13 +474,7 @@ def foo(
     #[test]
     fn test_extract_signature_with_comment_colon() {
         // Directly test that extract_signature_lines doesn't stop at a comment colon
-        let lines = vec![
-            "def foo(",
-            "    a,  # note:",
-            "    b,",
-            "):",
-            "    pass",
-        ];
+        let lines = vec!["def foo(", "    a,  # note:", "    b,", "):", "    pass"];
         let sig = extract_signature_lines(&lines, 1, 5);
         // Should include lines up to `):`
         assert_eq!(sig.len(), 4);
@@ -487,8 +485,14 @@ def foo(
     fn test_strip_trailing_comment() {
         assert_eq!(strip_trailing_comment("code  # comment"), "code");
         assert_eq!(strip_trailing_comment("no comment"), "no comment");
-        assert_eq!(strip_trailing_comment("'#' not a comment"), "'#' not a comment");
-        assert_eq!(strip_trailing_comment("\"#\" not a comment"), "\"#\" not a comment");
+        assert_eq!(
+            strip_trailing_comment("'#' not a comment"),
+            "'#' not a comment"
+        );
+        assert_eq!(
+            strip_trailing_comment("\"#\" not a comment"),
+            "\"#\" not a comment"
+        );
         assert_eq!(strip_trailing_comment("x = 1  # TODO:"), "x = 1");
         assert_eq!(strip_trailing_comment("@deco  # note:"), "@deco");
     }

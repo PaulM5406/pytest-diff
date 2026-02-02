@@ -44,7 +44,7 @@ class TestExecution:
     @property
     def fingerprints(self) -> list[Fingerprint]: ...
 
-class TestmonDatabase:
+class PytestDiffDatabase:
     def __init__(self, db_path: str) -> None: ...
     def save_test_execution(
         self,

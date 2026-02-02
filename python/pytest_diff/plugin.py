@@ -99,11 +99,12 @@ class PytestDiffPlugin:
     @staticmethod
     def _format_size(size_bytes: int) -> str:
         """Format a byte count as a human-readable string."""
+        size: float = float(size_bytes)
         for unit in ("B", "KB", "MB", "GB"):
-            if size_bytes < 1024:
-                return f"{size_bytes:.1f} {unit}" if unit != "B" else f"{size_bytes} B"
-            size_bytes /= 1024
-        return f"{size_bytes:.1f} TB"
+            if size < 1024:
+                return f"{size:.1f} {unit}" if unit != "B" else f"{int(size)} B"
+            size /= 1024
+        return f"{size:.1f} TB"
 
     @staticmethod
     def _get_config_value(config, cli_name: str, ini_name: str, default: int) -> int:
@@ -730,16 +731,7 @@ class PytestDiffPlugin:
         # Close database to checkpoint WAL and remove -wal/-shm files
         if self.db:
             try:
-                print("pytest-diff: Closing database...", end="", flush=True)
-                import time
-
-                close_start = time.time()
                 self.db.close()
-                close_elapsed = time.time() - close_start
-                if close_elapsed > 0.5:
-                    print(f" done ({close_elapsed:.1f}s)")
-                else:
-                    print(" done")
             except Exception:
                 print(" done")  # Ignore close errors
 

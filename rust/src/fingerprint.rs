@@ -166,7 +166,7 @@ fn save_baseline_internal(
             let count = progress_counter.fetch_add(1, Ordering::Relaxed) + 1;
             // Print progress every 200 files (or every 50 in verbose mode)
             let interval = if verbose { 50 } else { 200 };
-            if count % interval == 0 || count == total_files {
+            if count.is_multiple_of(interval) || count == total_files {
                 eprint!(
                     "\rpytest-diff: Fingerprinting files... {}/{} ({:.0}%)  ",
                     count,

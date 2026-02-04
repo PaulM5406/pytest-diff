@@ -85,6 +85,10 @@ def process_coverage_data(
     cache: FingerprintCache | None = None,
 ) -> list[Fingerprint]: ...
 def save_baseline(
-    db_path: str, project_root: str, verbose: bool, scope_paths: list[str]
+    db_path: str,
+    project_root: str,
+    verbose: bool,
+    scope_paths: list[str],
+    force: bool = False,
 ) -> int: ...
 def parse_module(source: str) -> list[Block]: ...

@@ -580,7 +580,11 @@ class PytestDiffPlugin:
                 logger.info("pytest-diff: Saving baseline fingerprints...%s", upload_msg)
                 start = time.time()
                 count = _core.save_baseline(
-                    str(self.db_path), str(get_rootdir(self.config)), self.verbose, self.scope_paths
+                    str(self.db_path),
+                    str(get_rootdir(self.config)),
+                    self.verbose,
+                    self.scope_paths,
+                    self.force,
                 )
                 elapsed = time.time() - start
                 logger.debug("Baseline save completed in %.3fs", elapsed)

@@ -62,7 +62,7 @@ pytest-diff uses a three-phase approach:
 - First run: executes all tests with coverage, maps which tests touch which code blocks
 - Subsequent runs: **incremental** — only re-runs tests affected by changes since last baseline
 - Stores dependency graph in `.pytest_cache/pytest-diff/pytest_diff.db` SQLite database
-- Use `--diff-force` to force a full rebuild when needed
+- Use `--diff-force` to force a full rebuild (re-runs all tests AND recomputes all fingerprints)
 
 ### 2. **Change Detection** (`--diff`)
 - Parses modified files with Rust (blazingly fast!)
@@ -103,7 +103,7 @@ Code Change → AST Parsing (Rust) → Block Checksums → Database Query → Ru
 |--------|-------------|
 | `--diff` | Enable pytest-diff (select tests based on changes) |
 | `--diff-baseline` | Compute baseline. First run executes all tests; subsequent runs are incremental (only affected tests) |
-| `--diff-force` | Force running all tests (use with `--diff-baseline` to rebuild from scratch) |
+| `--diff-force` | Force full rebuild: runs all tests AND recomputes all fingerprints (use with `--diff-baseline`) |
 | `--diff-v` | Enable verbose logging (shows timing and debug info) |
 | `--diff-batch-size N` | Number of test executions to batch before DB write (default: 20) |
 | `--diff-cache-size N` | Maximum fingerprints to cache in memory (default: 100000) |

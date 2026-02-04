@@ -80,18 +80,21 @@ pub(crate) fn calculate_fingerprint_internal(path: &str) -> Result<Fingerprint> 
 /// * `project_root` - Root directory of the project
 /// * `verbose` - Whether to print debug information
 /// * `scope_paths` - List of directory paths to limit the scope (e.g., ["tests/unit/"])
+/// * `force` - Force recomputation of all fingerprints, even for unchanged files
 ///
 /// # Returns
 /// * Number of files added to baseline
 #[pyfunction]
+#[pyo3(signature = (db_path, project_root, verbose, scope_paths, force=false))]
 pub fn save_baseline(
     db_path: &str,
     project_root: &str,
     verbose: bool,
     scope_paths: Vec<String>,
+    force: bool,
 ) -> PyResult<usize> {
-    let count =
-        save_baseline_internal(db_path, project_root, verbose, scope_paths).map_err(|e| {
+    let count = save_baseline_internal(db_path, project_root, verbose, scope_paths, force)
+        .map_err(|e| {
             pyo3::exceptions::PyRuntimeError::new_err(format!("Failed to save baseline: {}", e))
         })?;
 
@@ -103,6 +106,7 @@ fn save_baseline_internal(
     project_root: &str,
     verbose: bool,
     scope_paths: Vec<String>,
+    force: bool,
 ) -> Result<usize> {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
@@ -152,10 +156,11 @@ fn save_baseline_internal(
     let skipped_unchanged = Arc::new(AtomicUsize::new(0));
 
     if verbose {
-        eprintln!("[rust] Calculating fingerprints in parallel (incremental)...");
+        let mode = if force { "force" } else { "incremental" };
+        eprintln!("[rust] Calculating fingerprints in parallel ({})...", mode);
     }
 
-    // PARALLEL: Calculate fingerprints, skipping unchanged files
+    // PARALLEL: Calculate fingerprints, skipping unchanged files (unless force=true)
     let fp_calc_start = Instant::now();
     let fingerprints: Vec<(String, Option<Fingerprint>)> = python_files
         .par_iter()
@@ -178,21 +183,23 @@ fn save_baseline_internal(
                 }
             }
 
-            // Check if we can skip this file (hash unchanged)
-            if let Some(existing) = existing_baselines.get(&path_str) {
-                // Compute Blake3 hash (cheap: ~1ms for typical file)
-                if let Ok(content) = std::fs::read_to_string(path) {
-                    let current_hash = blake3::hash(content.as_bytes()).to_hex().to_string();
+            // Check if we can skip this file (hash unchanged) - only when not forcing
+            if !force {
+                if let Some(existing) = existing_baselines.get(&path_str) {
+                    // Compute Blake3 hash (cheap: ~1ms for typical file)
+                    if let Ok(content) = std::fs::read_to_string(path) {
+                        let current_hash = blake3::hash(content.as_bytes()).to_hex().to_string();
 
-                    if current_hash == existing.file_hash {
-                        // Hash matches - file content unchanged, skip expensive AST parsing
-                        skipped_unchanged.fetch_add(1, Ordering::Relaxed);
-                        return (path_str, None); // None means "keep existing"
+                        if current_hash == existing.file_hash {
+                            // Hash matches - file content unchanged, skip expensive AST parsing
+                            skipped_unchanged.fetch_add(1, Ordering::Relaxed);
+                            return (path_str, None); // None means "keep existing"
+                        }
                     }
                 }
             }
 
-            // File is new or changed - compute full fingerprint
+            // File is new or changed (or force=true) - compute full fingerprint
             let fp_start = Instant::now();
             let result = calculate_fingerprint_internal(&path_str);
 

@@ -11,6 +11,7 @@ the cached DB so we can skip re-downloading unchanged baselines.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 from pytest_diff.storage.base import BaselineStorage
 
@@ -30,7 +31,7 @@ class S3Storage(BaselineStorage):
         self._client = None
 
     @property
-    def client(self):  # noqa: ANN201
+    def client(self) -> Any:
         if self._client is None:
             try:
                 import boto3
@@ -67,14 +68,12 @@ class S3Storage(BaselineStorage):
             raise FileNotFoundError(f"Remote baseline not found: s3://{self.bucket}/{s3_key}")
         except Exception as exc:
             # boto3 wraps 304 Not Modified as a ClientError
-            error_code = getattr(getattr(exc, "response", None), "get", lambda *_: None)(
-                "Error", {}
-            )
-            if isinstance(error_code, dict) and error_code.get("Code") == "304":
-                return False
-            # Also handle via string matching for older boto3 versions
-            if "304" in str(exc) or "Not Modified" in str(exc):
-                return False
+            response = getattr(exc, "response", None)
+            if isinstance(response, dict):
+                error_code = response.get("Error", {}).get("Code", "")
+                http_code = response.get("ResponseMetadata", {}).get("HTTPStatusCode", 0)
+                if error_code == "304" or http_code == 304:
+                    return False
             raise
 
         # Write file and save ETag

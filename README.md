@@ -203,11 +203,17 @@ cargo bench
 pytest (Python)
     ↓
 pytest-diff plugin (Python)
+    ├── plugin.py        — pytest hooks & orchestration
+    ├── _config.py       — configuration helpers
+    ├── _git.py          — git commit SHA & staleness checks
+    ├── _storage_ops.py  — remote storage operations
+    ├── _xdist.py        — pytest-xdist coordination
+    └── storage/         — S3 & local backends
     ↓ (PyO3 bindings)
 pytest-diff-core (Rust)
     ├── AST Parser (RustPython parser)
     ├── Fingerprint Engine (CRC32)
-    └── Database Layer (SQLite + Cache)
+    └── Database Layer (SQLite + LRU Cache)
 ```
 
 ### Development Workflow

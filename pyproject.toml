@@ -39,6 +39,10 @@ dev = [
 s3 = [
     "boto3>=1.26",
 ]
+test = [
+    "pytest-xdist>=3.0",
+    "moto[s3]>=5.0",
+]
 
 [project.urls]
 Homepage = "https://github.com/paulmilesi/pytest-diff"

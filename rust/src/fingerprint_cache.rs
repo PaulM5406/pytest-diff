@@ -4,9 +4,10 @@
 // in memory, avoiding the need to re-parse the same files for every test.
 
 use anyhow::Result;
+use lru::LruCache;
 use parking_lot::RwLock;
 use pyo3::prelude::*;
-use std::collections::HashMap;
+use std::num::NonZeroUsize;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::UNIX_EPOCH;
@@ -25,12 +26,12 @@ const DEFAULT_MAX_SIZE: usize = 100_000;
 /// repeatedly during a test run. It's especially effective when multiple tests
 /// touch the same source files.
 ///
-/// The cache has a configurable maximum size to prevent unbounded memory growth
-/// on large codebases. When the limit is reached, 10% of entries are evicted.
+/// The cache uses LRU eviction: when the limit is reached, the least recently
+/// used entry is automatically evicted on insert.
 #[pyclass(unsendable)]
 pub struct FingerprintCache {
     // Cache: filepath -> (mtime, fingerprint)
-    cache: Arc<RwLock<HashMap<String, (f64, Fingerprint)>>>,
+    cache: Arc<RwLock<LruCache<String, (f64, Fingerprint)>>>,
     hits: Arc<RwLock<usize>>,
     misses: Arc<RwLock<usize>>,
     max_size: usize,
@@ -42,11 +43,13 @@ impl FingerprintCache {
     #[new]
     #[pyo3(signature = (max_size=None))]
     pub fn new(max_size: Option<usize>) -> Self {
+        let size = max_size.unwrap_or(DEFAULT_MAX_SIZE);
+        let cap = NonZeroUsize::new(size).unwrap_or(NonZeroUsize::new(1).unwrap());
         Self {
-            cache: Arc::new(RwLock::new(HashMap::new())),
+            cache: Arc::new(RwLock::new(LruCache::new(cap))),
             hits: Arc::new(RwLock::new(0)),
             misses: Arc::new(RwLock::new(0)),
-            max_size: max_size.unwrap_or(DEFAULT_MAX_SIZE),
+            max_size: size,
         }
     }
 
@@ -102,9 +105,9 @@ impl FingerprintCache {
             .duration_since(UNIX_EPOCH)?
             .as_secs_f64();
 
-        // Check cache
+        // Check cache (needs write lock for LRU promotion)
         {
-            let cache = self.cache.read();
+            let mut cache = self.cache.write();
             if let Some((cached_mtime, cached_fp)) = cache.get(path) {
                 // Check if mtime matches (file hasn't changed)
                 if (current_mtime - cached_mtime).abs() < 0.001 {
@@ -119,31 +122,12 @@ impl FingerprintCache {
         *self.misses.write() += 1;
         let fingerprint = calculate_fingerprint_internal(path)?;
 
-        // Update cache with size limit enforcement
+        // Update cache — LruCache auto-evicts when full
         {
             let mut cache = self.cache.write();
-
-            // Evict entries if cache is full
-            if cache.len() >= self.max_size {
-                self.evict_entries(&mut cache);
-            }
-
-            cache.insert(path.to_string(), (current_mtime, fingerprint.clone()));
+            cache.put(path.to_string(), (current_mtime, fingerprint.clone()));
         }
 
         Ok(fingerprint)
-    }
-
-    /// Evict 10% of cache entries when limit is reached
-    ///
-    /// Uses a simple strategy: remove arbitrary entries (HashMap iteration order).
-    /// This is fast and provides reasonable eviction behavior.
-    fn evict_entries(&self, cache: &mut HashMap<String, (f64, Fingerprint)>) {
-        let to_remove = self.max_size / 10;
-        let keys_to_remove: Vec<String> = cache.keys().take(to_remove.max(1)).cloned().collect();
-
-        for key in keys_to_remove {
-            cache.remove(&key);
-        }
     }
 }

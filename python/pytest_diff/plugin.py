@@ -7,7 +7,28 @@ based on code changes.
 
 from __future__ import annotations
 
+import logging
+import sys
 from pathlib import Path
+from typing import TYPE_CHECKING, Any
+
+from pytest_diff._config import (
+    check_scope_mismatch,
+    get_config_value,
+    get_rootdir,
+    get_scope_paths,
+    get_workerinput,
+    relative_scope_paths,
+)
+from pytest_diff._git import get_git_commit_sha
+from pytest_diff._storage_ops import download_and_import_baseline, upload_baseline
+from pytest_diff._xdist import is_xdist_controller, is_xdist_worker
+
+if TYPE_CHECKING:
+    import pytest
+    from _pytest.terminal import TerminalReporter
+
+logger = logging.getLogger("pytest_diff")
 
 # Coverage module will be imported when needed (not at module level)
 # to avoid caching None if not installed during initial import
@@ -22,19 +43,32 @@ except ImportError:
 class PytestDiffPlugin:
     """Main plugin class for pytest-diff"""
 
-    def __init__(self, config):
-        self.config = config
-        self.baseline = config.getoption("--diff-baseline", False)
-        self.force = config.getoption("--diff-force", False)
-        diff_flag = config.getoption("--diff", False)
-        self.enabled = diff_flag or self.baseline
+    def __init__(self, config: pytest.Config) -> None:
+        self.config: pytest.Config = config
+        self.verbose: bool = config.getoption("--diff-v", False)
+
+        # Configure logging before any log calls
+        if not logger.handlers:
+            handler = logging.StreamHandler(sys.stdout)
+            handler.setFormatter(logging.Formatter("%(message)s"))
+            logger.addHandler(handler)
+            logger.propagate = False
+        logger.setLevel(logging.DEBUG if self.verbose else logging.INFO)
+
+        self.baseline: bool = config.getoption("--diff-baseline", False)
+        self.force: bool = config.getoption("--diff-force", False)
+        diff_flag: bool = config.getoption("--diff", False)
+        self.enabled: bool = diff_flag or self.baseline
         if self.baseline and diff_flag:
-            print(
-                "⚠ pytest-diff: Both --diff and --diff-baseline provided;"
+            logger.warning(
+                "Both --diff and --diff-baseline provided;"
                 " --diff-baseline takes precedence (--diff will be ignored)"
             )
-        self.verbose = config.getoption("--diff-v", False)
-        self.upload = config.getoption("--diff-upload", False)
+        self.upload: bool = config.getoption("--diff-upload", False)
+
+        # xdist role detection (must be done early, before enabling checks)
+        self.is_worker = is_xdist_worker(config)
+        self.is_controller = is_xdist_controller(config)
 
         if not self.enabled:
             return
@@ -45,56 +79,44 @@ class PytestDiffPlugin:
             )
 
         # Remote storage configuration
-        self.remote_url = (
+        self.remote_url: str | None = (
             config.getoption("--diff-remote", None) or config.getini("diff_remote_url") or None
         )
-        self.remote_key = config.getini("diff_remote_key") or "baseline.db"
-        self.storage = None
+        self.remote_key: str = config.getini("diff_remote_key") or "baseline.db"
+        self.storage: Any = None
 
         # Initialize components - store database in pytest cache folder
-        cache_dir = Path(config.rootdir) / ".pytest_cache" / "pytest-diff"
+        cache_dir = get_rootdir(config) / ".pytest_cache" / "pytest-diff"
         cache_dir.mkdir(parents=True, exist_ok=True)
-        self.db_path = cache_dir / "pytest_diff.db"
+        self.db_path: Path = cache_dir / "pytest_diff.db"
         self.db: _core.PytestDiffDatabase | None = None
-        self.cov = None
+        self.cov: Any = None
         self.fp_cache: _core.FingerprintCache | None = (
             None  # Fingerprint cache for avoiding re-parsing
         )
-        self.deselected_items = []
-        self.current_test = None
-        self.test_start_time = None
-        self.test_files_executed = []
+        self.deselected_items: list[Any] = []
+        self.current_test: str | None = None
+        self.test_start_time: float | None = None
+        self.test_files_executed: list[str] = []
 
         # Get Python version for environment tracking
-        import sys
+        import sys as _sys
 
-        self.python_version = (
-            f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
+        self.python_version: str = (
+            f"{_sys.version_info.major}.{_sys.version_info.minor}.{_sys.version_info.micro}"
         )
 
         # Batch writing for test executions
-        self.test_execution_batch = []
-        # Adaptive batch size based on total test count
-        # For large test suites, larger batches = better performance
-        # Check command line first, then ini option
-        self.batch_size = self._get_config_value(config, "batch-size", "batch_size", 20)
+        self.test_execution_batch: list[tuple[str, list[Any], float, bool]] = []
+        self.batch_size: int = get_config_value(config, "batch-size", "batch_size", 20)
 
         # Cache size for fingerprints (configurable for large codebases)
-        self.cache_max_size = self._get_config_value(config, "cache-size", "cache_size", 100_000)
+        self.cache_max_size: int = get_config_value(config, "cache-size", "cache_size", 100_000)
 
-        # Get pytest invocation scope (e.g., if user runs 'pytest tests/unit/')
-        # We'll use this to only track files within the specified scope
-        self.scope_paths = self._get_scope_paths(config)
+        # Get pytest invocation scope
+        self.scope_paths: list[str] = get_scope_paths(config)
         if self.verbose or config.option.verbose >= 2:
-            print(f"[DEBUG] Scope paths: {self.scope_paths}")
-
-    def _log(self, message):
-        """Log verbose message with timestamp"""
-        if self.verbose:
-            import time
-
-            timestamp = time.strftime("%H:%M:%S")
-            print(f"[{timestamp}] pytest-diff: {message}")
+            logger.debug("Scope paths: %s", self.scope_paths)
 
     @staticmethod
     def _format_size(size_bytes: int) -> str:
@@ -106,204 +128,7 @@ class PytestDiffPlugin:
             size /= 1024
         return f"{size:.1f} TB"
 
-    @staticmethod
-    def _get_config_value(config, cli_name: str, ini_name: str, default: int) -> int:
-        """Get config value from CLI option or ini file, with fallback to default.
-
-        CLI options take precedence over ini options. Supports configuration via:
-        - Command line: --diff-{cli_name}
-        - pyproject.toml: [tool.pytest.ini_options] diff_{ini_name} = value
-        """
-        # Check if CLI option was explicitly provided
-        cli_value = config.getoption(f"--diff-{cli_name}", None)
-        if cli_value is not None:
-            return cli_value
-
-        # Check ini option (from pyproject.toml or pytest.ini)
-        ini_value = config.getini(f"diff_{ini_name}")
-        if ini_value:
-            try:
-                return int(ini_value)
-            except (ValueError, TypeError):
-                pass
-
-        return default
-
-    def _get_scope_paths(self, config):
-        """Get the absolute paths that define the pytest invocation scope.
-
-        If user runs 'pytest tests/unit/', we should only track files under tests/unit/.
-        If no args provided, track the entire rootdir.
-        """
-        if not config.args:
-            # No specific paths given, use rootdir
-            return [str(Path(config.rootdir).resolve())]
-
-        scope_paths = []
-        for arg in config.args:
-            # Strip pytest node ID (e.g., "tests/test_foo.py::TestClass::test_method" -> "tests/test_foo.py")
-            file_path = arg.split("::")[0]
-
-            # Resolve to absolute path
-            path = Path(file_path)
-            if not path.is_absolute():
-                path = Path(config.rootdir) / path
-
-            # Handle both files and directories
-            try:
-                resolved = path.resolve(strict=False)  # Don't fail if path doesn't exist
-                if resolved.is_dir():
-                    scope_paths.append(str(resolved))
-                elif resolved.is_file() or file_path.endswith(".py"):
-                    # For files, use their parent directory as scope
-                    scope_paths.append(str(resolved.parent))
-            except (OSError, RuntimeError):
-                # If path doesn't exist or can't be resolved, skip it
-                pass
-
-        return scope_paths if scope_paths else [str(Path(config.rootdir).resolve())]
-
-    @staticmethod
-    def _get_git_commit_sha(rootdir: str) -> str | None:
-        """Get the current HEAD commit SHA from git.
-
-        Returns None if git is unavailable, not a repo, or any error occurs.
-        """
-        import subprocess
-
-        try:
-            result = subprocess.run(
-                ["git", "rev-parse", "HEAD"],
-                cwd=rootdir,
-                capture_output=True,
-                text=True,
-                timeout=5,
-            )
-            if result.returncode == 0:
-                return result.stdout.strip()
-        except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
-            pass
-        return None
-
-    @staticmethod
-    def _check_baseline_staleness(baseline_commit: str, rootdir: str) -> str | None:
-        """Check if the baseline commit is stale relative to current HEAD.
-
-        Returns None if the baseline is current, or a warning message string.
-        """
-        import subprocess
-
-        current_sha = PytestDiffPlugin._get_git_commit_sha(rootdir)
-        if current_sha is None:
-            return None
-
-        if baseline_commit == current_sha:
-            return None
-
-        short_baseline = baseline_commit[:10]
-        short_head = current_sha[:10]
-
-        # Check if baseline_commit is an ancestor of HEAD
-        try:
-            result = subprocess.run(
-                ["git", "merge-base", "--is-ancestor", baseline_commit, "HEAD"],
-                cwd=rootdir,
-                capture_output=True,
-                timeout=5,
-            )
-            if result.returncode == 0:
-                return (
-                    f"Baseline was built from commit {short_baseline}, "
-                    f"current HEAD is {short_head}. "
-                    f"Baseline is older but included in your history. "
-                    f"Test selection may not be optimal for newly merged code."
-                )
-        except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
-            pass
-
-        return (
-            f"Baseline is STALE: built from commit {short_baseline} "
-            f"which is NOT in your current history (HEAD={short_head}). "
-            f"Test selection may be unreliable. "
-            f"Consider re-running: pytest --diff-baseline"
-        )
-
-    @staticmethod
-    def _is_subpath(child: Path, parent: Path) -> bool:
-        """Check if child is equal to or a subdirectory of parent."""
-        try:
-            child.relative_to(parent)
-            return True
-        except ValueError:
-            return False
-
-    @staticmethod
-    def _relative_scope_paths(scope_paths: list[str], rootdir: str) -> list[str]:
-        """Convert absolute scope paths to relative paths from rootdir.
-
-        Paths equal to rootdir become '.'.
-        """
-        result = []
-        for p in scope_paths:
-            try:
-                result.append(str(Path(p).relative_to(rootdir)))
-            except ValueError:
-                result.append(p)
-        return result
-
-    def _check_scope_mismatch(self) -> bool:
-        """Check if the current diff scope differs from the baseline scope.
-
-        Returns True if there is a mismatch.
-        In --diff-baseline mode the caller should run all tests to rebuild properly.
-        In --diff mode this is informational only.
-        """
-        if self.db is None:
-            return False
-        import json
-
-        raw = self.db.get_metadata("baseline_scope")
-        if raw is None:
-            return False
-        try:
-            baseline_scope = json.loads(raw)
-        except (json.JSONDecodeError, TypeError):
-            return False
-
-        rootdir = str(self.config.rootdir)
-        current_scope = self._relative_scope_paths(self.scope_paths, rootdir)
-
-        if sorted(baseline_scope) == sorted(current_scope):
-            return False
-
-        # Check if current scope is a subset of baseline scope
-        # (e.g. baseline=tests/, current=tests/unit/) — baseline covers everything
-        baseline_paths = [Path(p) for p in baseline_scope]
-        current_paths = [Path(p) for p in current_scope]
-        is_subscope = all(
-            any(self._is_subpath(cp, bp) for bp in baseline_paths) for cp in current_paths
-        )
-        if is_subscope:
-            return False
-
-        baseline_display = ", ".join(baseline_scope) or "."
-        current_display = ", ".join(current_scope) or "."
-        if self.baseline:
-            print(
-                f"⚠ pytest-diff: Scope mismatch — baseline was built with [{baseline_display}] "
-                f"but current run uses [{current_display}]. "
-                f"Running all tests to rebuild baseline."
-            )
-        else:
-            print(
-                f"⚠ pytest-diff: Scope mismatch — baseline was built with [{baseline_display}] "
-                f"but current run uses [{current_display}]. "
-                f"Some tests may not be selected. "
-                f"Consider re-running: pytest --diff-baseline {current_display}"
-            )
-        return True
-
-    def _flush_test_batch(self):
+    def _flush_test_batch(self) -> None:
         """Flush batched test executions to database"""
         if not self.test_execution_batch or self.db is None:
             return
@@ -311,174 +136,166 @@ class PytestDiffPlugin:
         import time
 
         batch_len = len(self.test_execution_batch)
-        print(f"\rpytest-diff: Saving {batch_len} test executions to DB...", end="", flush=True)
+        logger.info("pytest-diff: Saving %s test executions to DB...", batch_len)
         flush_start = time.time()
         for nodeid, fingerprints, duration, failed in self.test_execution_batch:
             self.db.save_test_execution(nodeid, fingerprints, duration, failed, self.python_version)
         elapsed = time.time() - flush_start
-        print(f"\rpytest-diff: Saved {batch_len} test executions to DB in {elapsed:.1f}s")
-        self._log(f"Flushed {batch_len} test executions to DB in {elapsed:.3f}s")
+        logger.info("pytest-diff: Saved %s test executions to DB in %.1fs", batch_len, elapsed)
+        logger.debug("Flushed %s test executions to DB in %.3fs", batch_len, elapsed)
         self.test_execution_batch = []
 
-    def _init_storage(self):
-        """Lazily initialize the remote storage backend."""
-        if self.storage is not None or not self.remote_url:
-            return
-        try:
-            from pytest_diff.storage import get_storage
-
-            self.storage = get_storage(self.remote_url)
-            if self.storage is None:
-                print(f"⚠ pytest-diff: Unsupported remote URL scheme: {self.remote_url}")
-        except Exception as e:
-            print(f"⚠ pytest-diff: Failed to initialize remote storage: {e}")
-
-    def _download_and_import_baseline(self):
-        """Download remote baseline DB and import via ATTACH."""
-        import tempfile
-        import time
-
-        self._init_storage()
-        if self.storage is None:
-            return
-
-        dl_start = time.time()
-        tmp_path = Path(tempfile.gettempdir()) / "pytest-diff-remote-baseline.db"
-
-        try:
-            downloaded = self.storage.download(self.remote_key, tmp_path)
-            if downloaded:
-                self._log(f"Downloaded remote baseline in {time.time() - dl_start:.3f}s")
-            else:
-                self._log("Remote baseline unchanged (cache hit)")
-        except FileNotFoundError:
-            self._log("No remote baseline found — skipping import")
-            return
-        except Exception as e:
-            print(f"⚠ pytest-diff: Failed to download remote baseline: {e}")
-            return
-
-        # Import baselines from the downloaded DB into local DB
-        if self.db is None:
-            return
-        try:
-            import_start = time.time()
-            count = self.db.import_baseline_from(str(tmp_path))
-            self._log(
-                f"Imported {count} baseline fingerprints in {time.time() - import_start:.3f}s"
-            )
-            print(
-                f"✓ pytest-diff: Imported {count} baseline fingerprints from remote into {self.db_path}"
-            )
-
-            # Check baseline staleness via stored commit SHA
-            baseline_commit = self.db.get_metadata("baseline_commit")
-            if baseline_commit:
-                warning = self._check_baseline_staleness(baseline_commit, str(self.config.rootdir))
-                if warning:
-                    print(f"⚠ pytest-diff: {warning}")
-            else:
-                self._log("No baseline_commit metadata found — skipping staleness check")
-        except Exception as e:
-            print(f"⚠ pytest-diff: Failed to import remote baseline: {e}")
-
-    def _upload_baseline(self):
-        """Upload local baseline DB to remote storage."""
-        import time
-
-        self._init_storage()
-        if self.storage is None:
-            return
-
-        try:
-            upload_start = time.time()
-            self.storage.upload(self.db_path, self.remote_key)
-            self._log(f"Uploaded baseline in {time.time() - upload_start:.3f}s")
-            url = self.remote_url.rstrip("/") + "/" + self.remote_key.lstrip("/")
-            print(f"✓ pytest-diff: Uploaded baseline to {url}")
-        except Exception as e:
-            print(f"⚠ pytest-diff: Failed to upload baseline: {e}")
-
-    def pytest_configure(self, config):
+    def pytest_configure(self, config: pytest.Config) -> None:
         """Initialize database and coverage collector"""
         if config.option.verbose >= 2:
-            print(f"\n[DEBUG] PytestDiffPlugin.pytest_configure called, enabled={self.enabled}")
+            logger.debug("PytestDiffPlugin.pytest_configure called, enabled=%s", self.enabled)
 
         if not self.enabled:
             return
 
+        if self.is_worker:
+            self._configure_as_worker(config)
+        else:
+            self._configure_as_controller_or_standalone(config)
+
+    def _configure_as_worker(self, config: pytest.Config) -> None:
+        """Configure as an xdist worker process.
+
+        Workers receive the DB path from the controller via workerinput.
+        They open the existing DB (schema already created) and skip remote download.
+        """
         import time
 
         start = time.time()
-        self._log("Starting pytest_configure")
+        logger.debug("Configuring as xdist worker")
+
+        # Get DB path from workerinput (set by controller in pytest_configure_node)
+        db_path_str = get_workerinput(config).get("pytest_diff_db_path")
+        if db_path_str:
+            self.db_path = Path(db_path_str)
+            logger.debug("Worker using DB path from controller: %s", self.db_path)
+
+        # Open existing DB (schema already created by controller)
+        try:
+            db_start = time.time()
+            self.db = _core.PytestDiffDatabase(str(self.db_path))
+            logger.debug("Worker opened database in %.3fs", time.time() - db_start)
+        except Exception as e:
+            logger.warning("⚠ pytest-diff worker: Could not open database: %s", e)
+            self.enabled = False
+            return
+
+        # Initialize fingerprint cache
+        cache_start = time.time()
+        self.fp_cache = _core.FingerprintCache(self.cache_max_size)
+        logger.debug(
+            "Worker fingerprint cache initialized (max_size=%s) in %.3fs",
+            self.cache_max_size,
+            time.time() - cache_start,
+        )
+
+        # Initialize coverage if available
+        self._init_coverage(config)
+
+        # Skip remote download - controller already did it
+        logger.debug("Worker pytest_configure completed in %.3fs", time.time() - start)
+
+    def _configure_as_controller_or_standalone(self, config: pytest.Config) -> None:
+        """Configure as the xdist controller or standalone (non-xdist) process.
+
+        Controllers/standalone create the DB, download remote baseline, etc.
+        """
+        import time
+
+        start = time.time()
+        role = "controller" if self.is_controller else "standalone"
+        logger.debug("Starting pytest_configure as %s", role)
 
         # Initialize Rust components
         try:
             db_start = time.time()
             self.db = _core.PytestDiffDatabase(str(self.db_path))
-            self._log(f"Database opened in {time.time() - db_start:.3f}s")
+            logger.debug("Database opened in %.3fs", time.time() - db_start)
             if not (self.remote_url and not self.baseline):
-                print(f"✓ pytest-diff: Using database at {self.db_path}")
+                logger.info("✓ pytest-diff: Using database at %s", self.db_path)
         except Exception as e:
-            print(f"⚠ pytest-diff: Could not open database: {e}")
+            logger.warning("⚠ pytest-diff: Could not open database: %s", e)
             # Try to delete corrupted database and create fresh
             try:
                 if self.db_path.exists():
                     self.db_path.unlink()
-                    print(f"  Deleted corrupted database, creating new one at {self.db_path}")
+                    logger.info(
+                        "  Deleted corrupted database, creating new one at %s", self.db_path
+                    )
                 else:
-                    print(f"  Creating new database at {self.db_path}")
+                    logger.info("  Creating new database at %s", self.db_path)
                 db_start = time.time()
                 self.db = _core.PytestDiffDatabase(str(self.db_path))
-                self._log(f"Database created in {time.time() - db_start:.3f}s")
+                logger.debug("Database created in %.3fs", time.time() - db_start)
             except Exception as e2:
-                print(f"⚠ pytest-diff: Failed to create database: {e2}")
+                logger.warning("⚠ pytest-diff: Failed to create database: %s", e2)
                 self.enabled = False
                 return
 
         # Initialize fingerprint cache with configurable size
         cache_start = time.time()
         self.fp_cache = _core.FingerprintCache(self.cache_max_size)
-        self._log(
-            f"Fingerprint cache initialized (max_size={self.cache_max_size}) in {time.time() - cache_start:.3f}s"
+        logger.debug(
+            "Fingerprint cache initialized (max_size=%s) in %.3fs",
+            self.cache_max_size,
+            time.time() - cache_start,
         )
 
         # Initialize coverage if available
-        coverage_module = None
+        self._init_coverage(config)
+
+        # Remote baseline: download and import if --diff mode + remote configured
+        if self.remote_url and not self.baseline:
+            self.storage = download_and_import_baseline(
+                self.storage,
+                self.remote_url,
+                self.remote_key,
+                self.db,
+                self.db_path,
+                str(get_rootdir(self.config)),
+                logger,
+            )
+
+        logger.debug("pytest_configure completed in %.3fs", time.time() - start)
+
+    def _init_coverage(self, config: pytest.Config) -> None:
+        """Initialize coverage collector if available."""
+        coverage_module: Any = None
         try:
             import coverage as coverage_module
         except ImportError:
             pass
 
         if config.option.verbose >= 2:
-            print(f"[DEBUG] Coverage module available: {coverage_module is not None}")
+            logger.debug("Coverage module available: %s", coverage_module is not None)
 
         if coverage_module:
+            import time
+
             cov_start = time.time()
             self.cov = coverage_module.Coverage(
                 data_file=None,  # Don't save coverage data
                 branch=False,
                 config_file=False,
-                source=[str(config.rootdir)],
+                source=[str(get_rootdir(config))],
             )
-            self._log(f"Coverage initialized in {time.time() - cov_start:.3f}s")
+            logger.debug("Coverage initialized in %.3fs", time.time() - cov_start)
             if config.option.verbose >= 2:
-                print("[DEBUG] Coverage initialized successfully")
+                logger.debug("Coverage initialized successfully")
 
-        # Remote baseline: download and import if --diff mode + remote configured
-        if self.remote_url and not self.baseline:
-            self._download_and_import_baseline()
-
-        self._log(f"pytest_configure completed in {time.time() - start:.3f}s")
-
-    def pytest_collection_modifyitems(self, config, items):
+    def pytest_collection_modifyitems(self, config: pytest.Config, items: list[Any]) -> None:
         """Select tests based on code changes"""
         if not self.enabled:
             return
 
         if self.baseline and not self.force:
             # Scope mismatch in baseline mode: run all tests to rebuild properly
-            if self._check_scope_mismatch():
+            if check_scope_mismatch(self.db, config, self.scope_paths, is_baseline=True):
                 return
 
             # Incremental baseline: if DB already has test data, only run affected tests
@@ -487,37 +304,40 @@ class PytestDiffPlugin:
             if stats.get("test_count", 0) > 0:
                 try:
                     changed = _core.detect_changes(
-                        str(self.db_path), str(config.rootdir), self.scope_paths
+                        str(self.db_path), str(get_rootdir(config)), self.scope_paths
                     )
                     if changed.has_changes():
-                        print(
-                            f"\n✓ pytest-diff: Incremental baseline — {len(changed.modified)} modified files"
+                        logger.info(
+                            "\n✓ pytest-diff: Incremental baseline — %s modified files",
+                            len(changed.modified),
                         )
                         affected_tests = self.db.get_affected_tests(changed.changed_blocks)
                         if affected_tests:
                             selected = [item for item in items if item.nodeid in affected_tests]
                             self.deselected_items = [item for item in items if item not in selected]
                             items[:] = selected
-                            print(f"  Running {len(selected)} affected tests")
-                            print(f"  Skipping {len(self.deselected_items)} unaffected tests")
+                            logger.info("  Running %s affected tests", len(selected))
+                            logger.info(
+                                "  Skipping %s unaffected tests", len(self.deselected_items)
+                            )
                             if self.deselected_items:
                                 config.hook.pytest_deselected(items=self.deselected_items)
                         else:
                             # Changes detected but no tests affected — skip all
-                            print("\n✓ pytest-diff: Incremental baseline — no tests affected")
+                            logger.info("\n✓ pytest-diff: Incremental baseline — no tests affected")
                             self.deselected_items = items[:]
                             items[:] = []
                             config.hook.pytest_deselected(items=self.deselected_items)
                     else:
                         # No changes — skip all tests
-                        print("\n✓ pytest-diff: No changes detected — skipping all tests")
+                        logger.info("\n✓ pytest-diff: No changes detected — skipping all tests")
                         self.deselected_items = items[:]
                         items[:] = []
                         config.hook.pytest_deselected(items=self.deselected_items)
                 except Exception as e:
                     # On error, fall through to run all tests
-                    print(f"\n⚠ pytest-diff: Error during incremental detection: {e}")
-                    print("  Running all tests")
+                    logger.warning("\n⚠ pytest-diff: Error during incremental detection: %s", e)
+                    logger.info("  Running all tests")
                 return
             # else: empty DB, fall through to run all tests
 
@@ -526,15 +346,17 @@ class PytestDiffPlugin:
             return
 
         # Warn if diff scope differs from baseline scope
-        self._check_scope_mismatch()
+        check_scope_mismatch(self.db, config, self.scope_paths, is_baseline=False)
 
         try:
             # Detect changes
-            changed = _core.detect_changes(str(self.db_path), str(config.rootdir), self.scope_paths)
+            changed = _core.detect_changes(
+                str(self.db_path), str(get_rootdir(config)), self.scope_paths
+            )
 
             if changed.has_changes():
-                print(f"\n✓ pytest-diff: Detected {len(changed.modified)} modified files")
-                print(f"  Changed blocks in {len(changed.changed_blocks)} files")
+                logger.info("\n✓ pytest-diff: Detected %s modified files", len(changed.modified))
+                logger.info("  Changed blocks in %s files", len(changed.changed_blocks))
 
                 # Get affected tests from database
                 assert self.db is not None
@@ -552,8 +374,8 @@ class PytestDiffPlugin:
                     self.deselected_items = [item for item in items if item not in selected]
                     items[:] = selected
 
-                    print(f"  Running {len(selected)} affected tests")
-                    print(f"  Skipping {len(self.deselected_items)} unaffected tests")
+                    logger.info("  Running %s affected tests", len(selected))
+                    logger.info("  Skipping %s unaffected tests", len(self.deselected_items))
 
                     if self.deselected_items:
                         config.hook.pytest_deselected(items=self.deselected_items)
@@ -562,29 +384,29 @@ class PytestDiffPlugin:
                     stats = self.db.get_stats()
                     if stats.get("test_count", 0) == 0:
                         # Database is empty - run all tests to build it
-                        print("  No tests affected by changes (database is empty)")
-                        print(f"  Running all {len(items)} tests to build database")
+                        logger.info("  No tests affected by changes (database is empty)")
+                        logger.info("  Running all %s tests to build database", len(items))
                     else:
                         # Database has data but no tests affected - skip all
-                        print("  No tests affected by changes")
-                        print(f"  Skipping all {len(items)} tests")
+                        logger.info("  No tests affected by changes")
+                        logger.info("  Skipping all %s tests", len(items))
                         self.deselected_items = items[:]
                         items[:] = []
                         config.hook.pytest_deselected(items=self.deselected_items)
             else:
-                print("\n✓ pytest-diff: No changes detected")
-                print(f"  Skipping all {len(items)} tests")
+                logger.info("\n✓ pytest-diff: No changes detected")
+                logger.info("  Skipping all %s tests", len(items))
                 self.deselected_items = items
                 items[:] = []
                 config.hook.pytest_deselected(items=self.deselected_items)
         except Exception as e:
-            print(f"\n⚠ pytest-diff: Error during change detection: {e}")
-            print("  Running all tests")
+            logger.warning("\n⚠ pytest-diff: Error during change detection: %s", e)
+            logger.info("  Running all tests")
             import traceback
 
             traceback.print_exc()
 
-    def pytest_runtest_protocol(self, item, nextitem):
+    def pytest_runtest_protocol(self, item: Any, nextitem: Any) -> None:
         """Start coverage collection for a test"""
         if not self.enabled:
             return
@@ -598,12 +420,12 @@ class PytestDiffPlugin:
         # Start coverage collection
         if self.cov:
             if self.config.option.verbose >= 2:
-                print(f"\n[DEBUG] Starting coverage for {item.nodeid}")
+                logger.debug("Starting coverage for %s", item.nodeid)
             self.cov.start()
         elif self.config.option.verbose >= 2:
-            print(f"\n[DEBUG] Coverage not available for {item.nodeid}")
+            logger.debug("Coverage not available for %s", item.nodeid)
 
-    def pytest_runtest_makereport(self, item, call):
+    def pytest_runtest_makereport(self, item: Any, call: Any) -> None:
         """Capture test result and save to database"""
         if not self.enabled:
             return
@@ -626,35 +448,32 @@ class PytestDiffPlugin:
 
         try:
             # Stop coverage and get executed files
-            fingerprints = []
+            fingerprints: list[Any] = []
 
             if self.cov:
                 cov_stop_start = time.time()
                 self.cov.stop()
                 data = self.cov.get_data()
-                self._log(f"Coverage stop took {time.time() - cov_stop_start:.3f}s")
+                logger.debug("Coverage stop took %.3fs", time.time() - cov_stop_start)
 
                 # Debug: log how many files coverage found
                 measured = list(data.measured_files())
-                self._log(f"Coverage measured {len(measured)} files")
+                logger.debug("Coverage measured %s files", len(measured))
                 if self.config.option.verbose >= 2:
-                    print(f"\n[DEBUG] Coverage measured {len(measured)} files")
                     for f in measured[:5]:
-                        print(f"  - {f}")
+                        logger.debug("  - %s", f)
 
                 # Get test file path for filtering
                 test_file = Path(item.fspath).resolve()
                 test_file_str = str(test_file)
 
                 # Extract coverage data as dict: filename -> list of executed lines
-                # This is the only Python-specific part; Rust does the rest!
                 extract_start = time.time()
-                coverage_map = {}
+                coverage_map: dict[str, list[int]] = {}
                 for filename in measured:
                     filepath = Path(filename)
-                    # Basic filtering: only .py files in project
                     if filepath.suffix == ".py" and str(filepath).startswith(
-                        str(self.config.rootdir)
+                        str(get_rootdir(self.config))
                     ):
                         abs_path = str(filepath.resolve())
                         lines = data.lines(filename)
@@ -662,39 +481,37 @@ class PytestDiffPlugin:
                             continue
                         executed_lines = list(lines)
                         coverage_map[abs_path] = executed_lines
-                self._log(
-                    f"Extracted coverage for {len(coverage_map)} files in {time.time() - extract_start:.3f}s"
+                logger.debug(
+                    "Extracted coverage for %s files in %.3fs",
+                    len(coverage_map),
+                    time.time() - extract_start,
                 )
 
-                # Let Rust do the heavy lifting in parallel!
-                # This handles:
-                # - File filtering (test files, etc.)
-                # - Fingerprint calculation
-                # - Block filtering by executed lines
-                # - All done concurrently with rayon
                 try:
                     process_start = time.time()
                     fingerprints = _core.process_coverage_data(
                         coverage_map,
-                        str(self.config.rootdir),
+                        str(get_rootdir(self.config)),
                         test_file_str,
                         self.config.option.verbose >= 2 or self.verbose,
                         self.scope_paths,
-                        self.fp_cache,  # Use cache to avoid re-parsing
+                        self.fp_cache,
                     )
-                    self._log(
-                        f"Rust processing took {time.time() - process_start:.3f}s, got {len(fingerprints)} fingerprints"
+                    logger.debug(
+                        "Rust processing took %.3fs, got %s fingerprints",
+                        time.time() - process_start,
+                        len(fingerprints),
                     )
                 except Exception as e:
                     if self.config.option.verbose:
-                        print(f"\n⚠ pytest-diff: Error processing coverage: {e}")
+                        logger.warning("⚠ pytest-diff: Error processing coverage: %s", e)
                         import traceback
 
                         traceback.print_exc()
 
                 erase_start = time.time()
-                self.cov.erase()  # Clear coverage data for next test
-                self._log(f"Coverage erase took {time.time() - erase_start:.3f}s")
+                self.cov.erase()
+                logger.debug("Coverage erase took %.3fs", time.time() - erase_start)
             else:
                 # If no coverage, still track the test file itself
                 test_file = Path(item.fspath).resolve()
@@ -708,19 +525,19 @@ class PytestDiffPlugin:
             # Add to batch instead of saving immediately
             if fingerprints:
                 self.test_execution_batch.append((item.nodeid, fingerprints, duration, failed))
-                self._log(f"Added to batch (size: {len(self.test_execution_batch)})")
+                logger.debug("Added to batch (size: %s)", len(self.test_execution_batch))
 
                 # Flush batch if it reaches batch_size
                 if len(self.test_execution_batch) >= self.batch_size:
                     self._flush_test_batch()
 
-            self._log(f"Total report handling took {time.time() - report_start:.3f}s")
+            logger.debug("Total report handling took %.3fs", time.time() - report_start)
         except Exception as e:
             # Don't fail the test run if we can't save to database
             if self.config.option.verbose:
-                print(f"\n⚠ pytest-diff: Could not save test execution: {e}")
+                logger.warning("⚠ pytest-diff: Could not save test execution: %s", e)
 
-    def pytest_terminal_summary(self, terminalreporter):
+    def pytest_terminal_summary(self, terminalreporter: TerminalReporter) -> None:
         """Show summary of deselected tests"""
         if not self.enabled:
             return
@@ -728,32 +545,45 @@ class PytestDiffPlugin:
         # Flush any remaining batched test executions
         self._flush_test_batch()
 
+        # Workers: close DB and return (don't save baseline or show summary)
+        if self.is_worker:
+            if self.db:
+                try:
+                    self.db.close()
+                except Exception:
+                    pass
+            return
+
         # Show cache statistics
         if self.fp_cache and self.verbose:
             hits, misses, hit_rate = self.fp_cache.stats()
             cache_size = self.fp_cache.size()
-            self._log(
-                f"Fingerprint cache stats: {hits} hits, {misses} misses, {hit_rate * 100:.1f}% hit rate, {cache_size} cached files"
+            logger.debug(
+                "Fingerprint cache stats: %s hits, %s misses, %.1f%% hit rate, %s cached files",
+                hits,
+                misses,
+                hit_rate * 100,
+                cache_size,
             )
 
-        # If baseline mode, save baseline fingerprints
+        # If baseline mode, save baseline fingerprints (controller/standalone only)
         if self.baseline:
             try:
                 import time
 
-                self._log("Starting baseline save")
+                logger.debug("Starting baseline save")
                 upload_msg = (
                     f" (will upload to {self.remote_url})"
                     if self.upload and self.remote_url
                     else ""
                 )
-                print(f"pytest-diff: Saving baseline fingerprints...{upload_msg}", flush=True)
+                logger.info("pytest-diff: Saving baseline fingerprints...%s", upload_msg)
                 start = time.time()
                 count = _core.save_baseline(
-                    str(self.db_path), str(self.config.rootdir), self.verbose, self.scope_paths
+                    str(self.db_path), str(get_rootdir(self.config)), self.verbose, self.scope_paths
                 )
                 elapsed = time.time() - start
-                self._log(f"Baseline save completed in {elapsed:.3f}s")
+                logger.debug("Baseline save completed in %.3fs", elapsed)
                 db_size = self._format_size(self.db_path.stat().st_size)
                 terminalreporter.write_sep(
                     "=",
@@ -762,17 +592,17 @@ class PytestDiffPlugin:
                 )
 
                 # Store git commit SHA in metadata for staleness detection
-                sha = self._get_git_commit_sha(str(self.config.rootdir))
+                sha = get_git_commit_sha(str(get_rootdir(self.config)))
                 if sha and self.db:
                     self.db.set_metadata("baseline_commit", sha)
-                    self._log(f"Stored baseline commit SHA: {sha[:10]}")
+                    logger.debug("Stored baseline commit SHA: %s", sha[:10])
 
                 # Store scope paths (relative to rootdir) so diff runs can detect mismatches
                 if self.db:
                     import json
 
-                    rootdir = str(self.config.rootdir)
-                    relative_scopes = self._relative_scope_paths(self.scope_paths, rootdir)
+                    rootdir = str(get_rootdir(self.config))
+                    relative_scopes = relative_scope_paths(self.scope_paths, rootdir)
                     self.db.set_metadata("baseline_scope", json.dumps(relative_scopes))
             except Exception as e:
                 terminalreporter.write_sep(
@@ -790,7 +620,13 @@ class PytestDiffPlugin:
                         self.db.close()
                     except Exception:
                         pass
-                self._upload_baseline()
+                self.storage = upload_baseline(
+                    self.storage,
+                    self.remote_url,
+                    self.remote_key,
+                    self.db_path,
+                    logger,
+                )
             return
 
         if self.deselected_items:
@@ -805,10 +641,10 @@ class PytestDiffPlugin:
             try:
                 self.db.close()
             except Exception:
-                print(" done")  # Ignore close errors
+                logger.info(" done")  # Ignore close errors
 
 
-def pytest_addoption(parser):
+def pytest_addoption(parser: pytest.Parser) -> None:
     """Add command-line options for pytest-diff
 
     Options can also be set in pyproject.toml under [tool.pytest.ini_options]:
@@ -897,7 +733,7 @@ def pytest_addoption(parser):
     )
 
 
-def pytest_configure(config):
+def pytest_configure(config: pytest.Config) -> None:
     """Register the plugin"""
     if (
         config.getoption("--diff")
@@ -906,3 +742,27 @@ def pytest_configure(config):
     ):
         plugin = PytestDiffPlugin(config)
         config.pluginmanager.register(plugin, "pytest_diff")
+
+
+try:
+    import pytest
+
+    @pytest.hookimpl(optionalhook=True)
+    def pytest_configure_node(node: Any) -> None:
+        """xdist hook: controller sends data to workers.
+
+        This is called by the xdist controller for each worker node before
+        tests start running. We use it to pass the DB path to workers.
+
+        The optionalhook=True tells pluggy to skip validation when xdist
+        is not installed.
+        """
+        plugin = node.config.pluginmanager.get_plugin("pytest_diff")
+        if plugin is None or not plugin.enabled:
+            return
+
+        # Pass DB path to worker via workerinput dict
+        node.workerinput["pytest_diff_db_path"] = str(plugin.db_path)
+        node.workerinput["pytest_diff_initialized"] = True
+except ImportError:
+    pass

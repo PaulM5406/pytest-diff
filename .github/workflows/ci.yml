@@ -54,8 +54,34 @@ jobs:
       - run: cargo test --lib
 
   python-tests:
-    name: Python tests
+    name: "Python ${{ matrix.python-version }} (${{ matrix.os }})"
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest]
+        python-version: ["3.8", "3.12", "3.13"]
+        include:
+          - os: macos-latest
+            python-version: "3.12"
+          - os: macos-latest
+            python-version: "3.13"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.93"
+      - uses: Swatinem/rust-cache@v2
+      - uses: astral-sh/setup-uv@v5
+      - run: uv sync --all-extras --dev --python "${{ matrix.python-version }}"
+      - run: uv tool install maturin
+      - run: maturin develop --uv
+      - run: uv run pytest
+
+  xdist-tests:
+    name: "xdist compatibility"
     runs-on: ubuntu-latest
+    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -64,6 +90,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - uses: astral-sh/setup-uv@v5
       - run: uv sync --all-extras --dev
+      - run: uv pip install "pytest-xdist>=3.0"
       - run: uv tool install maturin
       - run: maturin develop --uv
-      - run: uv run pytest
+      - run: uv run pytest python/tests/test_xdist.py -v

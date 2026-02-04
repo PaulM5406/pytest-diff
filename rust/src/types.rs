@@ -97,6 +97,7 @@ pub struct Fingerprint {
 #[pymethods]
 impl Fingerprint {
     #[new]
+    #[pyo3(signature = (filename, checksums, file_hash, mtime, blocks=None))]
     fn new(
         filename: String,
         checksums: Vec<i32>,

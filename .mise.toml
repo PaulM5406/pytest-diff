@@ -2,7 +2,7 @@
 # Install mise: https://mise.jdx.dev/
 
 [tools]
-python = "3.12"
+python = "3.13"
 rust = "1.93"
 uv = "latest"
 

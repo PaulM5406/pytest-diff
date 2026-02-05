@@ -83,6 +83,8 @@ def _download_single_baseline(
     # Use NamedTemporaryFile for unique filename (avoids race conditions with xdist)
     with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tmp:
         tmp_path = Path(tmp.name)
+    # Remove the empty file so storage backends don't think it's a valid cached copy
+    tmp_path.unlink(missing_ok=True)
 
     try:
         try:

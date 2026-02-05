@@ -83,6 +83,18 @@ class PytestDiffPlugin:
             config.getoption("--diff-remote", None) or config.getini("diff_remote_url") or None
         )
         self.remote_key: str = config.getini("diff_remote_key") or "baseline.db"
+
+        # If remote URL points to a specific .db file, extract it as the remote key
+        # e.g. s3://bucket/path/baseline.db -> url=s3://bucket/path/, key=baseline.db
+        if (
+            self.remote_url
+            and not self.remote_url.endswith("/")
+            and self.remote_url.rsplit("/", 1)[-1].endswith(".db")
+            and self.remote_key == "baseline.db"  # Only override default key
+        ):
+            url_parts = self.remote_url.rsplit("/", 1)
+            self.remote_url = url_parts[0] + "/"
+            self.remote_key = url_parts[1]
         self.storage: Any = None
 
         # Initialize components - store database in pytest cache folder

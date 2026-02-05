@@ -108,7 +108,7 @@ Code Change → AST Parsing (Rust) → Block Checksums → Database Query → Ru
 | `--diff-v` | Enable verbose logging (shows timing and debug info) |
 | `--diff-batch-size N` | Number of test executions to batch before DB write (default: 20) |
 | `--diff-cache-size N` | Maximum fingerprints to cache in memory (default: 100000) |
-| `--diff-remote URL` | Remote storage URL for baseline DB (e.g. `s3://bucket/prefix/`, `file:///path/`) |
+| `--diff-remote URL` | Remote storage URL for baseline DB (e.g. `s3://bucket/prefix/`, `s3://bucket/path/baseline.db`, `file:///path/`) |
 | `--diff-upload` | Upload baseline DB to remote storage after `--diff-baseline` completes |
 
 ```bash
@@ -121,8 +121,11 @@ pytest --diff-baseline
 # Force a full baseline rebuild
 pytest --diff-baseline --diff-force
 
-# Save baseline and upload to S3
+# Save baseline and upload to S3 (prefix-style URL)
 pytest --diff-baseline --diff-upload --diff-remote "s3://my-bucket/pytest-diff/"
+
+# Save baseline to a specific S3 key
+pytest --diff-baseline --diff-upload --diff-remote "s3://my-bucket/baselines/my-baseline.db"
 
 # Run affected tests, fetching baseline from remote
 pytest --diff --diff-remote "s3://my-bucket/pytest-diff/"

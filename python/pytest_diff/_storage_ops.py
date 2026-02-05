@@ -96,9 +96,6 @@ def _download_single_baseline(
         except FileNotFoundError:
             log.debug("No remote baseline found — skipping import")
             return storage
-        except Exception as e:
-            logger.warning("⚠ pytest-diff: Failed to download remote baseline: %s", e)
-            return storage
 
         if db is None:
             return storage
@@ -139,11 +136,7 @@ def _download_and_merge_baselines(
     temp_dir = Path(tempfile.mkdtemp(prefix="pytest_diff_"))
 
     try:
-        try:
-            downloaded_files = storage.download_all(temp_dir, prefix.rstrip("/"))
-        except Exception as e:
-            logger.warning("⚠ pytest-diff: Failed to download baselines from prefix: %s", e)
-            return storage
+        downloaded_files = storage.download_all(temp_dir, prefix.rstrip("/"))
 
         if not downloaded_files:
             log.debug("No baseline files found at remote prefix — skipping import")
@@ -245,14 +238,11 @@ def upload_baseline(
     if storage is None:
         return storage
 
-    try:
-        upload_start = time.time()
-        storage.upload(db_path, remote_key)
-        log.debug("Uploaded baseline in %.3fs", time.time() - upload_start)
-        assert remote_url is not None
-        url = remote_url.rstrip("/") + "/" + remote_key.lstrip("/")
-        logger.info("✓ pytest-diff: Uploaded baseline to %s", url)
-    except Exception as e:
-        logger.warning("⚠ pytest-diff: Failed to upload baseline: %s", e)
+    upload_start = time.time()
+    storage.upload(db_path, remote_key)
+    log.debug("Uploaded baseline in %.3fs", time.time() - upload_start)
+    assert remote_url is not None
+    url = remote_url.rstrip("/") + "/" + remote_key.lstrip("/")
+    logger.info("✓ pytest-diff: Uploaded baseline to %s", url)
 
     return storage

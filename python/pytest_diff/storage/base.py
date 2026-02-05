@@ -6,6 +6,10 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 
 
+class StorageAuthenticationError(Exception):
+    """Raised when remote storage credentials are missing or invalid."""
+
+
 class BaselineStorage(ABC):
     """Interface for uploading/downloading baseline DB files."""
 

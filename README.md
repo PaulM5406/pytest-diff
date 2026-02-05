@@ -161,7 +161,7 @@ pytest-diff supports storing the baseline database in remote storage, enabling a
 1. **CI (on merge to main):** `pytest --diff-baseline --diff-upload --diff-remote "s3://bucket/prefix/"`
 2. **Developer local:** `pytest --diff --diff-remote "s3://bucket/prefix/"` (auto-fetches latest baseline)
 
-S3 uses ETag-based caching to avoid re-downloading unchanged baselines. All remote errors are non-fatal -- if the download fails, tests run normally using the local baseline.
+S3 uses ETag-based caching to avoid re-downloading unchanged baselines. Any S3 error (authentication, network, permissions, etc.) will **immediately abort the test run** to avoid silently running without a baseline.
 
 **Merging baselines from parallel CI jobs:**
 

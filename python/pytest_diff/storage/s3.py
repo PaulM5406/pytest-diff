@@ -13,7 +13,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from pytest_diff.storage.base import BaselineStorage
+from pytest_diff.storage.base import BaselineStorage, StorageAuthenticationError
 
 
 class S3Storage(BaselineStorage):
@@ -45,8 +45,32 @@ class S3Storage(BaselineStorage):
     def _s3_key(self, remote_key: str) -> str:
         return f"{self.prefix}{remote_key}"
 
+    def _check_auth_error(self, exc: Exception, context: str) -> None:
+        """Raise ``StorageAuthenticationError`` if *exc* is an AWS auth failure."""
+        _AUTH_ERROR_CODES = frozenset(
+            (
+                "AccessDenied",
+                "ExpiredToken",
+                "InvalidAccessKeyId",
+                "SignatureDoesNotMatch",
+                "TokenRefreshRequired",
+            )
+        )
+        response = getattr(exc, "response", None)
+        if not isinstance(response, dict):
+            return
+        error_code = response.get("Error", {}).get("Code", "")
+        http_code = response.get("ResponseMetadata", {}).get("HTTPStatusCode", 0)
+        if error_code in _AUTH_ERROR_CODES or http_code in (401, 403):
+            raise StorageAuthenticationError(f"S3 authentication failed {context}: {exc}") from exc
+
     def upload(self, local_path: Path, remote_key: str) -> None:
-        self.client.upload_file(str(local_path), self.bucket, self._s3_key(remote_key))
+        s3_key = self._s3_key(remote_key)
+        try:
+            self.client.upload_file(str(local_path), self.bucket, s3_key)
+        except Exception as exc:
+            self._check_auth_error(exc, f"uploading to s3://{self.bucket}/{s3_key}")
+            raise
 
     def download(self, remote_key: str, local_path: Path) -> bool:
         s3_key = self._s3_key(remote_key)
@@ -68,12 +92,13 @@ class S3Storage(BaselineStorage):
             raise FileNotFoundError(f"Remote baseline not found: s3://{self.bucket}/{s3_key}")
         except Exception as exc:
             # boto3 wraps 304 Not Modified as a ClientError
-            response = getattr(exc, "response", None)
-            if isinstance(response, dict):
-                error_code = response.get("Error", {}).get("Code", "")
-                http_code = response.get("ResponseMetadata", {}).get("HTTPStatusCode", 0)
-                if error_code == "304" or http_code == 304:
+            resp = getattr(exc, "response", None)
+            if isinstance(resp, dict):
+                code = resp.get("Error", {}).get("Code", "")
+                http = resp.get("ResponseMetadata", {}).get("HTTPStatusCode", 0)
+                if code == "304" or http == 304:
                     return False
+            self._check_auth_error(exc, f"for s3://{self.bucket}/{s3_key}")
             raise
 
         # Write file and save ETag
@@ -96,17 +121,24 @@ class S3Storage(BaselineStorage):
 
         Returns:
             List of S3 keys (full paths) for all .db files found.
+
+        Raises:
+            StorageAuthenticationError: If S3 credentials are invalid or expired.
         """
         full_prefix = f"{self.prefix}{prefix}"
         keys: list[str] = []
 
-        # Use paginator to handle >1000 objects
-        paginator = self.client.get_paginator("list_objects_v2")
-        for page in paginator.paginate(Bucket=self.bucket, Prefix=full_prefix):
-            for obj in page.get("Contents", []):
-                key = obj["Key"]
-                if key.endswith(".db"):
-                    keys.append(key)
+        try:
+            # Use paginator to handle >1000 objects
+            paginator = self.client.get_paginator("list_objects_v2")
+            for page in paginator.paginate(Bucket=self.bucket, Prefix=full_prefix):
+                for obj in page.get("Contents", []):
+                    key = obj["Key"]
+                    if key.endswith(".db"):
+                        keys.append(key)
+        except Exception as exc:
+            self._check_auth_error(exc, f"listing s3://{self.bucket}/{full_prefix}")
+            raise
 
         return keys
 

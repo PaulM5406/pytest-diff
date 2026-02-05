@@ -96,6 +96,53 @@ class TestS3Storage:
             s3_storage.download("missing.db", tmp_path / "out.db")
 
 
+class TestS3AuthErrors:
+    """Tests for S3 authentication error detection (uses mocks, no moto needed)."""
+
+    def test_download_access_denied_raises_auth_error(self, tmp_path: Path) -> None:
+        from unittest.mock import MagicMock
+
+        from botocore.exceptions import ClientError
+
+        from pytest_diff.storage.base import StorageAuthenticationError
+        from pytest_diff.storage.s3 import S3Storage
+
+        storage = S3Storage("s3://test-bucket/prefix/")
+        mock_client = MagicMock()
+        error_response = {
+            "Error": {"Code": "AccessDenied", "Message": "Access Denied"},
+            "ResponseMetadata": {"HTTPStatusCode": 403},
+        }
+        mock_client.get_object.side_effect = ClientError(error_response, "GetObject")
+        mock_client.exceptions.NoSuchKey = type("NoSuchKey", (ClientError,), {})
+        storage._client = mock_client
+
+        with pytest.raises(StorageAuthenticationError, match="authentication failed"):
+            storage.download("baseline.db", tmp_path / "out.db")
+
+    def test_list_baselines_access_denied_raises_auth_error(self) -> None:
+        from unittest.mock import MagicMock
+
+        from botocore.exceptions import ClientError
+
+        from pytest_diff.storage.base import StorageAuthenticationError
+        from pytest_diff.storage.s3 import S3Storage
+
+        storage = S3Storage("s3://test-bucket/prefix/")
+        mock_client = MagicMock()
+        error_response = {
+            "Error": {"Code": "AccessDenied", "Message": "Access Denied"},
+            "ResponseMetadata": {"HTTPStatusCode": 403},
+        }
+        paginator = MagicMock()
+        paginator.paginate.side_effect = ClientError(error_response, "ListObjectsV2")
+        mock_client.get_paginator.return_value = paginator
+        storage._client = mock_client
+
+        with pytest.raises(StorageAuthenticationError, match="authentication failed"):
+            storage.list_baselines()
+
+
 class TestLocalStorageListAndDownloadAll:
     """Tests for list_baselines and download_all on local storage."""
 

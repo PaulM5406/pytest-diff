@@ -1,5 +1,10 @@
 # Project Rules
 
+## Hints
+
+- Factorize common code
+- Split big class and method into smaller parts
+
 ## Toolchain
 
 - **mise** manages Python, Rust and uv versions (see `.mise.toml`). Run `mise install` to bootstrap.

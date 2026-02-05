@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from pytest_diff.storage.base import BaselineStorage
+from pytest_diff.storage.base import BaselineStorage, StorageAuthenticationError
 
 
 def get_storage(url: str) -> BaselineStorage | None:
@@ -27,4 +27,4 @@ def get_storage(url: str) -> BaselineStorage | None:
     return None
 
 
-__all__ = ["BaselineStorage", "get_storage"]
+__all__ = ["BaselineStorage", "StorageAuthenticationError", "get_storage"]

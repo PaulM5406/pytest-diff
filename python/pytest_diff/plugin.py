@@ -263,15 +263,23 @@ class PytestDiffPlugin:
 
         # Remote baseline: download and import if --diff mode + remote configured
         if self.remote_url and not self.baseline:
-            self.storage = download_and_import_baseline(
-                self.storage,
-                self.remote_url,
-                self.remote_key,
-                self.db,
-                self.db_path,
-                str(get_rootdir(self.config)),
-                logger,
-            )
+            try:
+                self.storage = download_and_import_baseline(
+                    self.storage,
+                    self.remote_url,
+                    self.remote_key,
+                    self.db,
+                    self.db_path,
+                    str(get_rootdir(self.config)),
+                    logger,
+                )
+            except Exception as e:
+                import pytest
+
+                pytest.exit(
+                    f"pytest-diff: Failed to download remote baseline — aborting.\n  {e}",
+                    returncode=1,
+                )
 
         logger.debug("pytest_configure completed in %.3fs", time.time() - start)
 
@@ -636,13 +644,20 @@ class PytestDiffPlugin:
                         self.db.close()
                     except Exception:
                         pass
-                self.storage = upload_baseline(
-                    self.storage,
-                    self.remote_url,
-                    self.remote_key,
-                    self.db_path,
-                    logger,
-                )
+                try:
+                    self.storage = upload_baseline(
+                        self.storage,
+                        self.remote_url,
+                        self.remote_key,
+                        self.db_path,
+                        logger,
+                    )
+                except Exception as e:
+                    terminalreporter.write_sep(
+                        "=",
+                        f"pytest-diff: Failed to upload baseline to remote storage: {e}",
+                        red=True,
+                    )
             return
 
         if self.deselected_items:

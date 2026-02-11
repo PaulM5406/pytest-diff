@@ -860,8 +860,18 @@ impl PytestDiffDatabase {
 
             // Merge test execution data if source has those tables (backward compat)
             let test_execution_count = if Self::source_table_exists(&conn, "test_execution")? {
-                // 1. Merge environments (natural key: name+packages+version)
-                conn.execute(
+                // Disable FK checks for bulk insert performance; we handle
+                // referential integrity manually via explicit deletes below.
+                // Must be set outside a transaction to take effect.
+                conn.execute_batch("PRAGMA foreign_keys=OFF")
+                    .context("Failed to disable foreign keys")?;
+
+                conn.execute_batch("BEGIN")
+                    .context("Failed to begin merge transaction")?;
+
+                let te_result = (|| -> Result<usize> {
+                    // 1. Merge environments (natural key: name+packages+version)
+                    conn.execute(
                         "INSERT OR IGNORE INTO environment (environment_name, system_packages, python_version)
                          SELECT environment_name, system_packages, python_version
                          FROM source_db.environment",
@@ -869,59 +879,111 @@ impl PytestDiffDatabase {
                     )
                     .context("Failed to merge environment from source")?;
 
-                // 2. Merge file fingerprints (natural key: filename+fsha+checksums)
-                conn.execute(
-                    "INSERT OR IGNORE INTO file_fp (filename, method_checksums, mtime, fsha)
+                    // 2. Merge file fingerprints (natural key: filename+fsha+checksums)
+                    conn.execute(
+                        "INSERT OR IGNORE INTO file_fp (filename, method_checksums, mtime, fsha)
                          SELECT filename, method_checksums, mtime, fsha
                          FROM source_db.file_fp",
-                    [],
-                )
-                .context("Failed to merge file_fp from source")?;
+                        [],
+                    )
+                    .context("Failed to merge file_fp from source")?;
 
-                // 3. Delete stale test executions for tests that exist in the source
-                //    CASCADE will clean up test_execution_file_fp
-                conn.execute(
-                    "DELETE FROM test_execution
+                    // 3. Manual cascade: delete junction rows then test executions
+                    //    (FK triggers are off, so CASCADE won't fire automatically)
+                    conn.execute(
+                        "DELETE FROM test_execution_file_fp
+                         WHERE test_execution_id IN (
+                             SELECT id FROM test_execution
+                             WHERE test_name IN (SELECT test_name FROM source_db.test_execution))",
+                        [],
+                    )
+                    .context("Failed to delete stale junction rows")?;
+
+                    conn.execute(
+                        "DELETE FROM test_execution
                          WHERE test_name IN (SELECT test_name FROM source_db.test_execution)",
-                    [],
-                )
-                .context("Failed to delete stale test executions")?;
+                        [],
+                    )
+                    .context("Failed to delete stale test executions")?;
 
-                // 4. Insert test executions with remapped environment_id
-                let te_count = conn
-                        .execute(
-                            "INSERT INTO test_execution (environment_id, test_name, duration, failed, forced)
-                             SELECT e.id, ste.test_name, ste.duration, ste.failed, ste.forced
-                             FROM source_db.test_execution ste
-                             JOIN source_db.environment se ON ste.environment_id = se.id
-                             JOIN environment e ON e.environment_name = se.environment_name
-                                AND e.system_packages = se.system_packages
-                                AND e.python_version = se.python_version",
+                    // 4. Build temp ID mapping tables for efficient cross-DB remapping
+                    conn.execute_batch(
+                        "CREATE TEMP TABLE _env_map AS
+                         SELECT se.id AS src, e.id AS dst
+                         FROM source_db.environment se
+                         JOIN environment e ON e.environment_name = se.environment_name
+                             AND e.system_packages = se.system_packages
+                             AND e.python_version = se.python_version;
+
+                         CREATE TEMP TABLE _fp_map AS
+                         SELECT sfp.id AS src, fp.id AS dst
+                         FROM source_db.file_fp sfp
+                         JOIN file_fp fp ON fp.filename = sfp.filename
+                             AND fp.fsha = sfp.fsha
+                             AND fp.method_checksums = sfp.method_checksums;
+
+                         CREATE INDEX _fp_map_src ON _fp_map(src)",
+                    )
+                    .context("Failed to create ID mapping tables")?;
+
+                    // 5. Compute ID offset so source test_execution IDs can be
+                    //    remapped via simple arithmetic (avoids building _te_map)
+                    let offset: i64 = conn
+                        .query_row(
+                            "SELECT COALESCE(MAX(id), 0) FROM test_execution",
                             [],
+                            |row| row.get(0),
+                        )
+                        .context("Failed to get test_execution ID offset")?;
+
+                    // 6. Insert test executions with explicit remapped IDs
+                    let te_count = conn
+                        .execute(
+                            "INSERT INTO test_execution (id, environment_id, test_name, duration, failed, forced)
+                             SELECT ste.id + ?1, em.dst, ste.test_name, ste.duration, ste.failed, ste.forced
+                             FROM source_db.test_execution ste
+                             JOIN _env_map em ON ste.environment_id = em.src",
+                            params![offset],
                         )
                         .context("Failed to merge test_execution from source")?;
 
-                // 5. Insert junction rows with remapped IDs via natural key joins
-                conn.execute(
-                        "INSERT OR IGNORE INTO test_execution_file_fp (test_execution_id, fingerprint_id)
-                         SELECT te.id, fp.id
+                    // 7. Insert junction rows: offset arithmetic for test_execution_id,
+                    //    _fp_map lookup for fingerprint_id (single 2-table join)
+                    conn.execute(
+                        "INSERT INTO test_execution_file_fp (test_execution_id, fingerprint_id)
+                         SELECT steff.test_execution_id + ?1, fpm.dst
                          FROM source_db.test_execution_file_fp steff
-                         JOIN source_db.test_execution ste ON steff.test_execution_id = ste.id
-                         JOIN source_db.environment se ON ste.environment_id = se.id
-                         JOIN source_db.file_fp sfp ON steff.fingerprint_id = sfp.id
-                         JOIN environment e ON e.environment_name = se.environment_name
-                            AND e.system_packages = se.system_packages
-                            AND e.python_version = se.python_version
-                         JOIN test_execution te ON te.test_name = ste.test_name
-                            AND te.environment_id = e.id
-                         JOIN file_fp fp ON fp.filename = sfp.filename
-                            AND fp.fsha = sfp.fsha
-                            AND fp.method_checksums = sfp.method_checksums",
-                        [],
+                         JOIN _fp_map fpm ON steff.fingerprint_id = fpm.src",
+                        params![offset],
                     )
                     .context("Failed to merge test_execution_file_fp from source")?;
 
-                te_count
+                    Ok(te_count)
+                })();
+
+                // Always clean up temp tables and handle transaction
+                let _ = conn.execute_batch(
+                    "DROP TABLE IF EXISTS _env_map;
+                     DROP TABLE IF EXISTS _fp_map",
+                );
+
+                let count = match te_result {
+                    Ok(count) => {
+                        conn.execute_batch("COMMIT")
+                            .context("Failed to commit merge transaction")?;
+                        count
+                    }
+                    Err(e) => {
+                        let _ = conn.execute_batch("ROLLBACK");
+                        return Err(e);
+                    }
+                };
+
+                // Re-enable FK checks
+                conn.execute_batch("PRAGMA foreign_keys=ON")
+                    .context("Failed to re-enable foreign keys")?;
+
+                count
             } else {
                 0
             };

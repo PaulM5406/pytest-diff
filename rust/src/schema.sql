@@ -31,6 +31,8 @@ CREATE INDEX IF NOT EXISTS ix_test_execution_environment_id
     ON test_execution(environment_id);
 CREATE INDEX IF NOT EXISTS ix_test_execution_test_name
     ON test_execution(test_name);
+CREATE INDEX IF NOT EXISTS ix_test_execution_name_env
+    ON test_execution(test_name, environment_id);
 
 -- File fingerprints (block checksums)
 CREATE TABLE IF NOT EXISTS file_fp (

@@ -473,7 +473,14 @@ fn find_python_files(root: &str, scope_paths: &[String]) -> Result<Vec<PathBuf>>
         .filter_entry(|e| {
             // Skip hidden directories and common non-source directories
             let name = e.file_name().to_string_lossy();
-            !name.starts_with('.') && name != "__pycache__" && name != "node_modules"
+            if name.starts_with('.') || name == "__pycache__" || name == "node_modules" {
+                return false;
+            }
+            // Skip Python virtual environments (identified by pyvenv.cfg marker)
+            if e.file_type().is_dir() && e.path().join("pyvenv.cfg").exists() {
+                return false;
+            }
+            true
         })
     {
         let entry = entry?;
@@ -758,9 +765,12 @@ fn filter_executed_blocks_rust(blocks: &[Block], executed_lines: &HashSet<usize>
     blocks
         .iter()
         .filter(|block| {
-            // Check if any line in this block was executed
-            // Block lines are inclusive: [start_line, end_line]
-            (block.start_line..=block.end_line).any(|line| executed_lines.contains(&line))
+            // Check if any line in this block's BODY was executed.
+            // We use body_start_line instead of start_line to skip decorators
+            // and `def`/`class` signature lines, which Python executes at import
+            // time. This prevents false positives where importing a module makes
+            // all functions appear "executed".
+            (block.body_start_line..=block.end_line).any(|line| executed_lines.contains(&line))
         })
         .cloned()
         .collect()
@@ -801,6 +811,134 @@ mod tests {
 
         assert_eq!(fp1.file_hash, fp2.file_hash);
         assert_eq!(fp1.checksums, fp2.checksums);
+    }
+
+    #[test]
+    fn test_filter_executed_blocks_only_def_line_not_executed() {
+        // Simulates import-time coverage: only the `def` line (line 2) is covered,
+        // but the body starts at line 3. The function should NOT be considered executed.
+        let blocks = vec![Block {
+            start_line: 2,
+            end_line: 4,
+            checksum: 111,
+            name: "get_active_announcements".to_string(),
+            block_type: "function".to_string(),
+            body_start_line: 3,
+        }];
+        // Only the def line (2) was executed (import-time registration)
+        let executed_lines: HashSet<usize> = [2].into_iter().collect();
+        let result = filter_executed_blocks_rust(&blocks, &executed_lines);
+        assert!(
+            result.is_empty(),
+            "Function with only def line covered should NOT be considered executed"
+        );
+    }
+
+    #[test]
+    fn test_filter_executed_blocks_body_line_executed() {
+        // When a body line is covered, the function IS considered executed.
+        let blocks = vec![Block {
+            start_line: 2,
+            end_line: 4,
+            checksum: 111,
+            name: "get_active_announcements".to_string(),
+            block_type: "function".to_string(),
+            body_start_line: 3,
+        }];
+        // Body line 3 was executed (function was actually called)
+        let executed_lines: HashSet<usize> = [2, 3].into_iter().collect();
+        let result = filter_executed_blocks_rust(&blocks, &executed_lines);
+        assert_eq!(
+            result.len(),
+            1,
+            "Function with body line covered should be considered executed"
+        );
+        assert_eq!(result[0].name, "get_active_announcements");
+    }
+
+    #[test]
+    fn test_filter_executed_blocks_decorator_not_counted() {
+        // Decorator on line 1, def on line 2, body starts line 3.
+        // Only decorator + def lines covered → not executed.
+        let blocks = vec![Block {
+            start_line: 1,
+            end_line: 5,
+            checksum: 222,
+            name: "decorated_func".to_string(),
+            block_type: "function".to_string(),
+            body_start_line: 3,
+        }];
+        let executed_lines: HashSet<usize> = [1, 2].into_iter().collect();
+        let result = filter_executed_blocks_rust(&blocks, &executed_lines);
+        assert!(
+            result.is_empty(),
+            "Decorator + def line coverage should not count as executed"
+        );
+    }
+
+    #[test]
+    fn test_filter_executed_blocks_class_def_line_counted() {
+        // Class body_start_line = class def line (skipping decorator).
+        // The class def line IS executed at import time, so covering it counts.
+        let blocks = vec![Block {
+            start_line: 1, // decorator line
+            end_line: 10,
+            checksum: 333,
+            name: "MyClass".to_string(),
+            block_type: "class".to_string(),
+            body_start_line: 2, // class def line
+        }];
+        // Only decorator line covered → not executed
+        let executed_lines: HashSet<usize> = [1].into_iter().collect();
+        let result = filter_executed_blocks_rust(&blocks, &executed_lines);
+        assert!(
+            result.is_empty(),
+            "Decorated class with only decorator covered should NOT be executed"
+        );
+
+        // Class def line covered → executed
+        let executed_lines: HashSet<usize> = [1, 2].into_iter().collect();
+        let result = filter_executed_blocks_rust(&blocks, &executed_lines);
+        assert_eq!(
+            result.len(),
+            1,
+            "Class with def line covered should be considered executed"
+        );
+    }
+
+    #[test]
+    fn test_find_python_files_skips_venv() {
+        // Create a temp directory with a non-hidden project root inside
+        // (tempdir names start with '.' which would be skipped by filter_entry)
+        let dir = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(dir.path()).unwrap().join("project");
+        std::fs::create_dir_all(&root).unwrap();
+
+        // Create a normal Python file
+        let src_dir = root.join("src");
+        std::fs::create_dir_all(&src_dir).unwrap();
+        std::fs::write(src_dir.join("app.py"), "pass").unwrap();
+
+        // Create a venv with pyvenv.cfg marker
+        let venv_dir = root.join("venv");
+        std::fs::create_dir_all(venv_dir.join("lib")).unwrap();
+        std::fs::write(venv_dir.join("pyvenv.cfg"), "home = /usr/bin").unwrap();
+        std::fs::write(venv_dir.join("lib").join("site.py"), "pass").unwrap();
+
+        let files = find_python_files(root.to_str().unwrap(), &[]).unwrap();
+        let filenames: Vec<String> = files
+            .iter()
+            .map(|p| p.file_name().unwrap().to_string_lossy().to_string())
+            .collect();
+
+        assert!(
+            filenames.contains(&"app.py".to_string()),
+            "Should include normal Python file"
+        );
+        assert!(
+            !filenames.contains(&"site.py".to_string()),
+            "Should skip venv Python files"
+        );
     }
 
     #[test]

@@ -209,6 +209,7 @@ pub(crate) fn parse_module_internal(source: &str) -> Result<Vec<Block>> {
         checksum: module_checksum,
         name: "<module>".to_string(),
         block_type: "module".to_string(),
+        body_start_line: 1,
     });
 
     // Extract blocks from AST
@@ -241,12 +242,24 @@ fn extract_block_from_statement(
 
     match stmt {
         ast::Stmt::FunctionDef(func_def) => {
-            let start = get_line_number(locator, stmt.start());
+            let def_line = get_line_number(locator, stmt.start());
+            // Include decorators in start_line so the checksum covers them
+            let start = func_def
+                .decorator_list
+                .first()
+                .map(|d| get_line_number(locator, d.start()))
+                .unwrap_or(def_line);
             let end = get_line_number(locator, stmt.end());
 
-            // Extract the source for this function
             let block_source = extract_source_lines(source, start, end)?;
             let checksum = calculate_checksum(&block_source);
+
+            // body_start_line = first line of the function body (skipping decorators + def)
+            let body_start_line = func_def
+                .body
+                .first()
+                .map(|s| get_line_number(locator, s.start()))
+                .unwrap_or(def_line);
 
             blocks.push(Block {
                 start_line: start,
@@ -254,17 +267,29 @@ fn extract_block_from_statement(
                 checksum,
                 name: func_def.name.to_string(),
                 block_type: "function".to_string(),
+                body_start_line,
             });
 
             // Extract nested blocks
             extract_blocks_from_statements(&func_def.body, source, blocks, locator)?;
         }
         ast::Stmt::AsyncFunctionDef(async_func_def) => {
-            let start = get_line_number(locator, stmt.start());
+            let def_line = get_line_number(locator, stmt.start());
+            let start = async_func_def
+                .decorator_list
+                .first()
+                .map(|d| get_line_number(locator, d.start()))
+                .unwrap_or(def_line);
             let end = get_line_number(locator, stmt.end());
 
             let block_source = extract_source_lines(source, start, end)?;
             let checksum = calculate_checksum(&block_source);
+
+            let body_start_line = async_func_def
+                .body
+                .first()
+                .map(|s| get_line_number(locator, s.start()))
+                .unwrap_or(def_line);
 
             blocks.push(Block {
                 start_line: start,
@@ -272,23 +297,32 @@ fn extract_block_from_statement(
                 checksum,
                 name: async_func_def.name.to_string(),
                 block_type: "async_function".to_string(),
+                body_start_line,
             });
 
             extract_blocks_from_statements(&async_func_def.body, source, blocks, locator)?;
         }
         ast::Stmt::ClassDef(class_def) => {
-            let start = get_line_number(locator, stmt.start());
+            let def_line = get_line_number(locator, stmt.start());
+            let start = class_def
+                .decorator_list
+                .first()
+                .map(|d| get_line_number(locator, d.start()))
+                .unwrap_or(def_line);
             let end = get_line_number(locator, stmt.end());
 
             let block_source = extract_source_lines(source, start, end)?;
             let checksum = calculate_checksum(&block_source);
 
+            // Class body IS executed at import time, so body_start_line = class def
+            // line (skip decorators only, keep the `class` line).
             blocks.push(Block {
                 start_line: start,
                 end_line: end,
                 checksum,
                 name: class_def.name.to_string(),
                 block_type: "class".to_string(),
+                body_start_line: def_line,
             });
 
             extract_blocks_from_statements(&class_def.body, source, blocks, locator)?;
@@ -495,6 +529,120 @@ def foo(
         );
         assert_eq!(strip_trailing_comment("x = 1  # TODO:"), "x = 1");
         assert_eq!(strip_trailing_comment("@deco  # note:"), "@deco");
+    }
+
+    #[test]
+    fn test_body_start_line_simple_function() {
+        let source = "def foo():\n    return 1\n";
+        let blocks = parse_module_internal(source).unwrap();
+        let func = blocks.iter().find(|b| b.name == "foo").unwrap();
+        // def on line 1, body (return) on line 2
+        assert_eq!(func.start_line, 1);
+        assert_eq!(func.body_start_line, 2);
+    }
+
+    #[test]
+    fn test_body_start_line_decorated_function() {
+        let source = "@app.route('/api')\ndef get_data():\n    return []\n";
+        let blocks = parse_module_internal(source).unwrap();
+        let func = blocks.iter().find(|b| b.name == "get_data").unwrap();
+        // start_line includes the decorator
+        assert_eq!(func.start_line, 1);
+        // Body starts at line 3 (the `return []` statement)
+        assert_eq!(func.body_start_line, 3);
+    }
+
+    #[test]
+    fn test_body_start_line_multi_decorator_function() {
+        let source = "@login_required\n@app.route('/api')\ndef get_data():\n    return []\n";
+        let blocks = parse_module_internal(source).unwrap();
+        let func = blocks.iter().find(|b| b.name == "get_data").unwrap();
+        // start_line is the first decorator
+        assert_eq!(func.start_line, 1);
+        assert_eq!(func.body_start_line, 4);
+    }
+
+    #[test]
+    fn test_body_start_line_multiline_signature() {
+        let source = "@app.route('/api')\ndef get_data(\n    param1: str,\n    param2: int,\n) -> list:\n    return []\n";
+        let blocks = parse_module_internal(source).unwrap();
+        let func = blocks.iter().find(|b| b.name == "get_data").unwrap();
+        assert_eq!(func.start_line, 1);
+        // Body is `return []` on line 6, not the closing `)` on line 5
+        assert_eq!(func.body_start_line, 6);
+    }
+
+    #[test]
+    fn test_body_start_line_async_function() {
+        let source = "async def fetch():\n    return await get()\n";
+        let blocks = parse_module_internal(source).unwrap();
+        let func = blocks.iter().find(|b| b.name == "fetch").unwrap();
+        assert_eq!(func.start_line, 1);
+        assert_eq!(func.body_start_line, 2);
+    }
+
+    #[test]
+    fn test_body_start_line_class_no_decorator() {
+        let source = "class Foo:\n    x = 1\n";
+        let blocks = parse_module_internal(source).unwrap();
+        let cls = blocks.iter().find(|b| b.name == "Foo").unwrap();
+        // Without decorators, start_line == body_start_line == class def line
+        assert_eq!(cls.start_line, 1);
+        assert_eq!(cls.body_start_line, 1);
+    }
+
+    #[test]
+    fn test_body_start_line_decorated_class() {
+        let source = "@dataclass\nclass Foo:\n    x: int = 1\n";
+        let blocks = parse_module_internal(source).unwrap();
+        let cls = blocks.iter().find(|b| b.name == "Foo").unwrap();
+        // start_line includes the decorator
+        assert_eq!(cls.start_line, 1);
+        // body_start_line is the class def line (class body runs at import time)
+        assert_eq!(cls.body_start_line, 2);
+    }
+
+    #[test]
+    fn test_body_start_line_class_method() {
+        let source = "class Foo:\n    def method(self):\n        return 1\n";
+        let blocks = parse_module_internal(source).unwrap();
+        let method = blocks.iter().find(|b| b.name == "method").unwrap();
+        // method def on line 2, body on line 3
+        assert_eq!(method.start_line, 2);
+        assert_eq!(method.body_start_line, 3);
+    }
+
+    #[test]
+    fn test_body_start_line_module() {
+        let source = "x = 1\n";
+        let blocks = parse_module_internal(source).unwrap();
+        let module = blocks.iter().find(|b| b.name == "<module>").unwrap();
+        assert_eq!(module.body_start_line, 1);
+    }
+
+    #[test]
+    fn test_body_start_line_with_docstring() {
+        // Docstring is an Expr statement in the AST — body_start_line will
+        // point to it. That's fine: coverage.py doesn't mark bare string
+        // literals as executed, so it won't cause false positives.
+        let source = "def foo():\n    \"\"\"Docstring.\"\"\"\n    return 1\n";
+        let blocks = parse_module_internal(source).unwrap();
+        let func = blocks.iter().find(|b| b.name == "foo").unwrap();
+        assert_eq!(func.start_line, 1);
+        // body_start_line points to the docstring (first AST statement)
+        assert_eq!(func.body_start_line, 2);
+    }
+
+    #[test]
+    fn test_body_start_line_with_comment() {
+        // Comments are not AST nodes — they're invisible to the parser.
+        // body_start_line points to the first real statement after the comment.
+        let source = "def foo():\n    # comment\n    return 1\n";
+        let blocks = parse_module_internal(source).unwrap();
+        let func = blocks.iter().find(|b| b.name == "foo").unwrap();
+        assert_eq!(func.start_line, 1);
+        // comment on line 2 is invisible to AST, body starts at line 3
+        assert_eq!(func.body_start_line, 3);
     }
 
     #[test]

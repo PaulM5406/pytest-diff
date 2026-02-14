@@ -33,17 +33,25 @@ pub struct Block {
     /// Block type: "module", "class", "function", "async_function"
     #[pyo3(get)]
     pub block_type: String,
+
+    /// First line of the function/class body (skipping decorators and def/class line).
+    /// Used for execution detection: decorator and `def` lines are executed at import
+    /// time, so we only check body lines to determine if a function was actually called.
+    #[pyo3(get)]
+    pub body_start_line: usize,
 }
 
 #[pymethods]
 impl Block {
     #[new]
+    #[pyo3(signature = (start_line, end_line, checksum, name, block_type, body_start_line=None))]
     fn new(
         start_line: usize,
         end_line: usize,
         checksum: i32,
         name: String,
         block_type: String,
+        body_start_line: Option<usize>,
     ) -> Self {
         Self {
             start_line,
@@ -51,13 +59,19 @@ impl Block {
             checksum,
             name,
             block_type,
+            body_start_line: body_start_line.unwrap_or(start_line),
         }
     }
 
     fn __repr__(&self) -> String {
         format!(
-            "Block(name='{}', type='{}', lines={}-{}, checksum={})",
-            self.name, self.block_type, self.start_line, self.end_line, self.checksum
+            "Block(name='{}', type='{}', lines={}-{}, body_start={}, checksum={})",
+            self.name,
+            self.block_type,
+            self.start_line,
+            self.end_line,
+            self.body_start_line,
+            self.checksum
         )
     }
 
@@ -238,12 +252,30 @@ mod tests {
             0x12345678,
             "test_func".to_string(),
             "function".to_string(),
+            None,
         );
 
         assert_eq!(block.start_line, 1);
         assert_eq!(block.end_line, 10);
         assert_eq!(block.checksum, 0x12345678);
         assert_eq!(block.name, "test_func");
+        // body_start_line defaults to start_line when None
+        assert_eq!(block.body_start_line, 1);
+    }
+
+    #[test]
+    fn test_block_creation_with_body_start_line() {
+        let block = Block::new(
+            1,
+            10,
+            0x12345678,
+            "test_func".to_string(),
+            "function".to_string(),
+            Some(3),
+        );
+
+        assert_eq!(block.start_line, 1);
+        assert_eq!(block.body_start_line, 3);
     }
 
     #[test]

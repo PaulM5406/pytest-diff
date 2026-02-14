@@ -24,6 +24,8 @@ from pytest_diff._git import get_git_commit_sha
 from pytest_diff._storage_ops import download_and_import_baseline, upload_baseline
 from pytest_diff._xdist import is_xdist_controller, is_xdist_worker
 
+import _pytest.outcomes
+
 if TYPE_CHECKING:
     import pytest
     from _pytest.terminal import TerminalReporter
@@ -474,6 +476,16 @@ class PytestDiffPlugin:
 
             traceback.print_exc()
 
+    def _test_file_fingerprint(self, item: Any) -> list[Any]:
+        """Calculate fingerprint for the test file itself (no coverage)."""
+        test_file = Path(item.fspath).resolve()
+        if test_file.exists() and test_file.suffix == ".py":
+            try:
+                return [_core.calculate_fingerprint(str(test_file), str(get_rootdir(self.config)))]
+            except Exception:
+                pass
+        return []
+
     def pytest_runtest_protocol(self, item: Any, nextitem: Any) -> None:
         """Start coverage collection for a test"""
         if not self.enabled:
@@ -501,6 +513,23 @@ class PytestDiffPlugin:
         # In --diff mode, don't save test executions — preserve baseline fingerprints
         # so that changed tests keep being selected until a new baseline is set
         if not self.baseline:
+            return
+
+        # Handle skips during setup (e.g., @pytest.mark.skip, skipIf)
+        # Coverage was started in pytest_runtest_protocol but test body never ran
+        if (
+            call.when == "setup"
+            and call.excinfo is not None
+            and call.excinfo.errisinstance(_pytest.outcomes.Skipped)
+        ):
+            if self.cov:
+                self.cov.stop()
+                self.cov.erase()
+            fingerprints = self._test_file_fingerprint(item)
+            if fingerprints:
+                self.test_execution_batch.append((item.nodeid, fingerprints, 0.0, False))
+                if len(self.test_execution_batch) >= self.batch_size:
+                    self._flush_test_batch()
             return
 
         # Only save after test execution (not setup/teardown)
@@ -582,23 +611,23 @@ class PytestDiffPlugin:
                 logger.debug("Coverage erase took %.3fs", time.time() - erase_start)
             else:
                 # If no coverage, still track the test file itself
-                test_file = Path(item.fspath).resolve()
-                test_file_str = str(test_file)
-                if test_file.exists() and test_file.suffix == ".py":
-                    try:
-                        fingerprints.append(
-                            _core.calculate_fingerprint(
-                                test_file_str, str(get_rootdir(self.config))
-                            )
-                        )
-                    except Exception:
-                        pass
+                fingerprints = self._test_file_fingerprint(item)
 
-            # Skip failed tests so they remain "unknown" and get re-selected
-            # on the next --diff run until they pass
+            # Skip genuinely failed tests so they remain "unknown" and get re-selected
+            # on the next --diff run until they pass.
+            # But record skipped and xfail tests so they get deselected properly.
             if failed:
-                logger.debug("Skipping failed test %s (will be re-selected next run)", item.nodeid)
-                return
+                import pytest as _pytest_mod
+
+                is_skip = call.excinfo.errisinstance(_pytest.outcomes.Skipped)
+                is_xfail = item.get_closest_marker(
+                    "xfail"
+                ) is not None or call.excinfo.errisinstance(_pytest_mod.xfail.Exception)
+                if not is_skip and not is_xfail:
+                    logger.debug(
+                        "Skipping failed test %s (will be re-selected next run)", item.nodeid
+                    )
+                    return
 
             # Add to batch instead of saving immediately
             if fingerprints:

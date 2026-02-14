@@ -104,6 +104,16 @@ class TestS3Storage:
         with pytest.raises(FileNotFoundError):
             s3_storage.download("missing.db", tmp_path / "out.db")
 
+    def test_download_etag_cache_hit(self, s3_storage, tmp_path: Path) -> None:
+        """Two consecutive downloads: first returns True, second returns False (ETag match)."""
+        local_file = tmp_path / "local.db"
+        local_file.write_bytes(b"s3 data")
+        s3_storage.upload(local_file, "baseline.db")
+
+        dest = tmp_path / "downloaded.db"
+        assert s3_storage.download("baseline.db", dest) is True
+        assert s3_storage.download("baseline.db", dest) is False
+
 
 class TestS3AuthErrors:
     """Tests for S3 authentication error detection (uses mocks, no moto needed)."""
@@ -581,3 +591,116 @@ class TestCliMergeRemote:
         assert result == 1
         captured = capsys.readouterr()
         assert "input database required" in captured.err
+
+
+class TestDownloadSingleBaselineCaching:
+    """Tests for persistent cache path and import-skip logic in _download_single_baseline."""
+
+    def test_skips_import_on_cache_hit(self, tmp_path: Path) -> None:
+        """Second call with unchanged remote skips the destructive import."""
+        import logging
+
+        from pytest_diff._core import PytestDiffDatabase
+        from pytest_diff._storage_ops import _download_single_baseline
+        from pytest_diff.storage.local import LocalStorage
+
+        # Set up a remote baseline
+        remote_dir = tmp_path / "remote"
+        remote_dir.mkdir()
+        py_file = tmp_path / "mod.py"
+        py_file.write_text("x = 1\n")
+        _create_source_db(remote_dir / "baseline.db", py_file)
+
+        storage = LocalStorage(f"file://{remote_dir}")
+
+        # Prepare the local DB
+        cache_dir = tmp_path / "cache"
+        cache_dir.mkdir()
+        db_path = cache_dir / "pytest_diff.db"
+        db = PytestDiffDatabase(str(db_path))
+        log = logging.getLogger("test")
+
+        # First call: downloads and imports
+        _download_single_baseline(storage, "baseline.db", db, db_path, str(tmp_path), log)
+        assert db.get_metadata("remote_baseline_etag") == "1"
+        stats_after_first = db.get_stats()
+        assert stats_after_first["baseline_count"] == 1
+
+        # Second call: cache hit — should skip import
+        _download_single_baseline(storage, "baseline.db", db, db_path, str(tmp_path), log)
+        # Still has the marker and same data
+        assert db.get_metadata("remote_baseline_etag") == "1"
+        stats_after_second = db.get_stats()
+        assert stats_after_second["baseline_count"] == 1
+
+    def test_reimports_when_remote_changes(self, tmp_path: Path) -> None:
+        """When remote baseline changes, it re-downloads and re-imports."""
+        import logging
+
+        from pytest_diff._core import PytestDiffDatabase
+        from pytest_diff._storage_ops import _download_single_baseline
+        from pytest_diff.storage.local import LocalStorage
+
+        remote_dir = tmp_path / "remote"
+        remote_dir.mkdir()
+        py_file = tmp_path / "mod.py"
+        py_file.write_text("x = 1\n")
+        _create_source_db(remote_dir / "baseline.db", py_file)
+
+        storage = LocalStorage(f"file://{remote_dir}")
+        cache_dir = tmp_path / "cache"
+        cache_dir.mkdir()
+        db_path = cache_dir / "pytest_diff.db"
+        db = PytestDiffDatabase(str(db_path))
+        log = logging.getLogger("test")
+
+        # First call
+        _download_single_baseline(storage, "baseline.db", db, db_path, str(tmp_path), log)
+        assert db.get_stats()["baseline_count"] == 1
+
+        # Update remote with a different file (newer mtime triggers re-download)
+        import time
+
+        time.sleep(0.05)  # Ensure mtime differs
+        py_file2 = tmp_path / "mod2.py"
+        py_file2.write_text("y = 2\n")
+        _create_source_db(remote_dir / "baseline.db", py_file2)
+
+        # Second call: remote changed → re-downloads and re-imports
+        _download_single_baseline(storage, "baseline.db", db, db_path, str(tmp_path), log)
+        assert db.get_metadata("remote_baseline_etag") == "1"
+
+    def test_reimports_when_db_recreated(self, tmp_path: Path) -> None:
+        """When local DB is recreated (metadata lost), re-imports even on cache hit."""
+        import logging
+
+        from pytest_diff._core import PytestDiffDatabase
+        from pytest_diff._storage_ops import _download_single_baseline
+        from pytest_diff.storage.local import LocalStorage
+
+        remote_dir = tmp_path / "remote"
+        remote_dir.mkdir()
+        py_file = tmp_path / "mod.py"
+        py_file.write_text("x = 1\n")
+        _create_source_db(remote_dir / "baseline.db", py_file)
+
+        storage = LocalStorage(f"file://{remote_dir}")
+        cache_dir = tmp_path / "cache"
+        cache_dir.mkdir()
+        db_path = cache_dir / "pytest_diff.db"
+        db = PytestDiffDatabase(str(db_path))
+        log = logging.getLogger("test")
+
+        # First call: import succeeds
+        _download_single_baseline(storage, "baseline.db", db, db_path, str(tmp_path), log)
+        assert db.get_metadata("remote_baseline_etag") == "1"
+
+        # Simulate DB recreation: new DB instance without the metadata marker
+        db.close()
+        db_path.unlink()
+        db = PytestDiffDatabase(str(db_path))
+
+        # Cache file still exists → download returns False, but no metadata → re-imports
+        _download_single_baseline(storage, "baseline.db", db, db_path, str(tmp_path), log)
+        assert db.get_metadata("remote_baseline_etag") == "1"
+        assert db.get_stats()["baseline_count"] == 1

@@ -6,7 +6,6 @@ Extracted from plugin.py to keep the main module focused on pytest hooks.
 from __future__ import annotations
 
 import logging
-import tempfile
 import time
 from pathlib import Path
 from typing import Any
@@ -102,48 +101,48 @@ def _download_single_baseline(
 ) -> Any:
     """Download a single baseline file and import it."""
     dl_start = time.time()
-    # Use NamedTemporaryFile for unique filename (avoids race conditions with xdist)
-    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tmp:
-        tmp_path = Path(tmp.name)
-    # Remove the empty file so storage backends don't think it's a valid cached copy
-    tmp_path.unlink(missing_ok=True)
+    # Use a stable cache path so ETag sidecar files persist across runs
+    cache_path = db_path.parent / f"remote_{remote_key}"
 
     try:
-        try:
-            downloaded = storage.download(remote_key, tmp_path)
-            if downloaded:
-                log.debug("Downloaded remote baseline in %.3fs", time.time() - dl_start)
-            else:
-                log.debug("Remote baseline unchanged (cache hit)")
-        except FileNotFoundError:
-            log.debug("No remote baseline found — skipping import")
-            return storage
+        downloaded = storage.download(remote_key, cache_path)
+        if downloaded:
+            log.debug("Downloaded remote baseline in %.3fs", time.time() - dl_start)
+        else:
+            log.debug("Remote baseline unchanged (cache hit)")
+    except FileNotFoundError:
+        log.debug("No remote baseline found — skipping import")
+        return storage
 
-        if db is None:
-            return storage
-        try:
-            import_start = time.time()
-            result = db.import_baseline_from(str(tmp_path))
-            log.debug(
-                "Imported %s baseline fingerprints and %s test executions in %.3fs",
-                result.baseline_count,
-                result.test_execution_count,
-                time.time() - import_start,
-            )
-            logger.info(
-                "✓ pytest-diff: Imported %s baseline fingerprints"
-                " and %s test executions from remote into %s",
-                result.baseline_count,
-                result.test_execution_count,
-                db_path,
-            )
+    if db is None:
+        return storage
 
-            _check_baseline_staleness(db, rootdir, log)
-        except Exception as e:
-            logger.warning("⚠ pytest-diff: Failed to import remote baseline: %s", e)
-    finally:
-        # Clean up temp file
-        tmp_path.unlink(missing_ok=True)
+    # Skip redundant import when baseline is unchanged and already imported
+    if not downloaded and db.get_metadata("remote_baseline_etag"):
+        log.debug("Remote baseline unchanged and already imported — skipping")
+        _check_baseline_staleness(db, rootdir, log)
+        return storage
+
+    try:
+        import_start = time.time()
+        result = db.import_baseline_from(str(cache_path))
+        log.debug(
+            "Imported %s baseline fingerprints and %s test executions in %.3fs",
+            result.baseline_count,
+            result.test_execution_count,
+            time.time() - import_start,
+        )
+        logger.info(
+            "✓ pytest-diff: Imported %s baseline fingerprints"
+            " and %s test executions from remote into %s",
+            result.baseline_count,
+            result.test_execution_count,
+            db_path,
+        )
+        db.set_metadata("remote_baseline_etag", "1")
+        _check_baseline_staleness(db, rootdir, log)
+    except Exception as e:
+        logger.warning("⚠ pytest-diff: Failed to import remote baseline: %s", e)
 
     return storage
 

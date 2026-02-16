@@ -23,12 +23,6 @@ undefined/
 *.swp
 *.swo
 
-# Testmon
-.testmondata
-.testmondata-journal
-.testmondata-wal
-.testmondata-shm
-
 # OS
 .DS_Store
 Thumbs.db

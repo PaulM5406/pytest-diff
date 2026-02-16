@@ -77,7 +77,7 @@ class TestS3Storage:
     @pytest.fixture()
     def s3_storage(self, tmp_path: Path):
         import boto3
-        from moto import mock_aws  # type: ignore[import-not-found]
+        from moto import mock_aws
 
         from pytest_difftest.storage.s3 import S3Storage
 

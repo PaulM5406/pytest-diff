@@ -60,7 +60,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest]
-        python-version: ["3.8", "3.12", "3.13"]
+        python-version: ["3.9", "3.12", "3.13"]
         include:
           - os: macos-latest
             python-version: "3.12"
@@ -81,7 +81,6 @@ jobs:
   xdist-tests:
     name: "xdist compatibility"
     runs-on: ubuntu-latest
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable

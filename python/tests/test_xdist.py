@@ -27,17 +27,6 @@ class TestXdistHelpers:
         expected = hasattr(pytestconfig, "workercount") and not hasattr(pytestconfig, "workerinput")
         assert result is expected
 
-    def test_get_worker_id(self, pytestconfig):
-        """get_worker_id returns worker ID or None based on context."""
-        from pytest_difftest._xdist import get_worker_id
-
-        result = get_worker_id(pytestconfig)
-        if hasattr(pytestconfig, "workerinput"):
-            assert result is not None
-            assert result.startswith("gw")
-        else:
-            assert result is None
-
 
 class TestXdistBaseline:
     """Tests for baseline mode with xdist."""

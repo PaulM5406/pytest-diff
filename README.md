@@ -169,7 +169,7 @@ ty check python/                                # Type check
 
 ## Credits
 
-Inspired by [pytest-testmon](https://github.com/tarpas/pytest-testmon). Built with [Ruff's Python parser](https://github.com/astral-sh/ruff), [PyO3](https://github.com/PyO3/pyo3), and [Maturin](https://github.com/PyO3/maturin).
+Inspired by [pytest-testmon](https://github.com/tarpas/pytest-testmon). Built with [RustPython's parser](https://github.com/RustPython/Parser), [PyO3](https://github.com/PyO3/pyo3), and [Maturin](https://github.com/PyO3/maturin).
 
 ## License
 

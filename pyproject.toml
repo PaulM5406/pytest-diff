@@ -7,9 +7,9 @@ name = "pytest-difftest"
 version = "0.1.0"
 description = "Blazingly fast test selection for pytest - only run tests affected by your changes (Rust-powered)"
 readme = "README.md"
-authors = [{name = "Paul Milesi", email = "paul.milesi@example.com"}]
+authors = [{name = "Paul Milesi"}]
 license = {text = "MIT"}
-requires-python = ">=3.8"
+requires-python = ">=3.9"
 dependencies = [
     "pytest>=7.0",
     "coverage>=7.0",
@@ -21,7 +21,6 @@ classifiers = [
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.8",
     "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
@@ -69,7 +68,7 @@ python_functions = ["test_*"]
 
 [tool.ruff]
 line-length = 100
-target-version = "py38"
+target-version = "py39"
 
 [tool.ty.environment]
 python-version = "3.12"

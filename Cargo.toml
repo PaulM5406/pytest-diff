@@ -5,6 +5,6 @@ resolver = "2"
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
-authors = ["Paul Milesi <paul.milesi@example.com>"]
+authors = ["Paul Milesi"]
 license = "MIT"
 repository = "https://github.com/PaulM5406/pytest-difftest"

@@ -16,10 +16,3 @@ def is_xdist_worker(config: pytest.Config) -> bool:
 def is_xdist_controller(config: pytest.Config) -> bool:
     """Return True if running as the xdist controller."""
     return hasattr(config, "workercount") and not hasattr(config, "workerinput")
-
-
-def get_worker_id(config: pytest.Config) -> str | None:
-    """Get worker ID (e.g., 'gw0') or None if not a worker."""
-    if hasattr(config, "workerinput"):
-        return config.workerinput.get("workerid")
-    return None

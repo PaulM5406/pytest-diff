@@ -1,4 +1,4 @@
-# mise configuration for pytest-diff
+# mise configuration for pytest-difftest
 # Install mise: https://mise.jdx.dev/
 
 [tools]

@@ -1,6 +1,6 @@
-// pytest-diff-core: Rust core for blazingly fast test selection
+// pytest-difftest-core: Rust core for blazingly fast test selection
 //
-// This module provides the core functionality for pytest-diff:
+// This module provides the core functionality for pytest-difftest:
 // - Python AST parsing with Ruff
 // - Code block fingerprinting with CRC32
 // - SQLite database operations with caching

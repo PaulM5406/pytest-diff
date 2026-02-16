@@ -1,17 +1,17 @@
-# pytest-diff
+# pytest-difftest
 
 > **⚠️** This project is still a work in progress. APIs and behavior may change without notice.
 
 **Fast test selection for pytest** - Only run tests affected by your changes, powered by Rust 🦀
 
-[![CI](https://github.com/PaulM5406/pytest-diff/workflows/CI/badge.svg)](https://github.com/paulmilesi/pytest-diff/actions)
-[![PyPI](https://img.shields.io/pypi/v/pytest-diff.svg)](https://pypi.org/project/pytest-diff/)
-[![Python Versions](https://img.shields.io/pypi/pyversions/pytest-diff.svg)](https://pypi.org/project/pytest-diff/)
+[![CI](https://github.com/PaulM5406/pytest-difftest/workflows/CI/badge.svg)](https://github.com/paulmilesi/pytest-difftest/actions)
+[![PyPI](https://img.shields.io/pypi/v/pytest-difftest.svg)](https://pypi.org/project/pytest-difftest/)
+[![Python Versions](https://img.shields.io/pypi/pyversions/pytest-difftest.svg)](https://pypi.org/project/pytest-difftest/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-## What is pytest-diff?
+## What is pytest-difftest?
 
-pytest-diff is a pytest plugin that intelligently selects and runs only the tests affected by your code changes.
+pytest-difftest is a pytest plugin that intelligently selects and runs only the tests affected by your code changes.
 
 ### Key Features
 
@@ -25,13 +25,13 @@ pytest-diff is a pytest plugin that intelligently selects and runs only the test
 ## Installation
 
 ```bash
-pip install pytest-diff
+pip install pytest-difftest
 ```
 
 Or with uv (recommended):
 
 ```bash
-uv add --dev pytest-diff
+uv add --dev pytest-difftest
 ```
 
 ## Quick Start
@@ -50,7 +50,7 @@ pytest --diff-baseline
 pytest --diff-baseline --diff-force
 
 # Example output:
-# pytest-diff: Detected 3 modified files
+# pytest-difftest: Detected 3 modified files
 #   Running 12 affected tests
 #   Skipping 438 unaffected tests
 # ==================== 12 passed in 0.8s =====================
@@ -58,12 +58,12 @@ pytest --diff-baseline --diff-force
 
 ## How It Works
 
-pytest-diff uses a three-phase approach:
+pytest-difftest uses a three-phase approach:
 
 ### 1. **Baseline** (`--diff-baseline`)
 - First run: executes all tests with coverage, maps which tests touch which code blocks
 - Subsequent runs: **incremental** — only re-runs tests affected by changes since last baseline
-- Stores dependency graph in `.pytest_cache/pytest-diff/pytest_diff.db` SQLite database
+- Stores dependency graph in `.pytest_cache/pytest-difftest/pytest_difftest.db` SQLite database
 - Use `--diff-force` to force a full rebuild (re-runs all tests AND recomputes all fingerprints)
 
 ### 2. **Change Detection** (`--diff`)
@@ -107,7 +107,7 @@ Code Change → AST Parsing (Rust) → Block Checksums → Database Query → Ru
 
 | Option | Description |
 |--------|-------------|
-| `--diff` | Enable pytest-diff (select tests based on changes) |
+| `--diff` | Enable pytest-difftest (select tests based on changes) |
 | `--diff-baseline` | Compute baseline. First run executes all tests; subsequent runs are incremental (only affected tests) |
 | `--diff-force` | Force full rebuild: runs all tests AND recomputes all fingerprints (use with `--diff-baseline`) |
 | `--diff-v` | Enable verbose logging (shows timing and debug info) |
@@ -149,13 +149,13 @@ CLI options take precedence over `pyproject.toml` values when both are provided.
 
 ### Remote Baseline Storage
 
-pytest-diff supports storing the baseline database in remote storage, enabling a CI/CD workflow where CI computes the baseline and developers automatically fetch it.
+pytest-difftest supports storing the baseline database in remote storage, enabling a CI/CD workflow where CI computes the baseline and developers automatically fetch it.
 
 **Supported backends:**
 
 | Scheme | Backend | Requirements |
 |--------|---------|-------------|
-| `s3://bucket/path/file.db` | Amazon S3 | `pip install pytest-diff[s3]` |
+| `s3://bucket/path/file.db` | Amazon S3 | `pip install pytest-difftest[s3]` |
 | `file:///path/to/file.db` | Local filesystem | None |
 
 **Simple CI/CD workflow (single job):**
@@ -175,7 +175,7 @@ pytest --diff-baseline --diff-upload --diff-remote "s3://bucket/run-123/job-unit
 pytest --diff-baseline --diff-upload --diff-remote "s3://bucket/run-123/job-integration.db"
 
 # Step 2: Final CI step merges all baselines and uploads the result
-pytest-diff merge s3://bucket/baseline.db s3://bucket/run-123/
+pytest-difftest merge s3://bucket/baseline.db s3://bucket/run-123/
 
 # Step 3: Developers fetch the single merged baseline
 pytest --diff --diff-remote "s3://bucket/baseline.db"
@@ -183,33 +183,33 @@ pytest --diff --diff-remote "s3://bucket/baseline.db"
 
 ### CLI Commands
 
-pytest-diff provides a CLI for offline database operations:
+pytest-difftest provides a CLI for offline database operations:
 
 ```bash
 # Merge local database files
-pytest-diff merge output.db input1.db input2.db
+pytest-difftest merge output.db input1.db input2.db
 
 # Merge all .db files from a local directory
-pytest-diff merge output.db ./results/
+pytest-difftest merge output.db ./results/
 
 # Merge from a remote prefix (downloads all .db files from it)
-pytest-diff merge output.db s3://bucket/run-123/
+pytest-difftest merge output.db s3://bucket/run-123/
 
 # Merge and upload result to S3
-pytest-diff merge s3://bucket/baseline.db input1.db input2.db
+pytest-difftest merge s3://bucket/baseline.db input1.db input2.db
 
 # Full remote: download from prefix, merge, and upload
-pytest-diff merge s3://bucket/baseline.db s3://bucket/run-123/
+pytest-difftest merge s3://bucket/baseline.db s3://bucket/run-123/
 
 # Mix local files, directories, and remote inputs
-pytest-diff merge output.db input1.db ./results/ s3://bucket/run-123/
+pytest-difftest merge output.db input1.db ./results/ s3://bucket/run-123/
 ```
 
 The `output` argument can be a local path or a remote URL (s3://..., file://...). When it's a remote URL, a temporary file is used locally and uploaded at the end. Each input can be a local file, a local directory (collects all `.db` files), or a remote URL (prefix ending with `/` downloads all `.db` files).
 
 ## Development Setup
 
-pytest-diff uses modern Python tooling:
+pytest-difftest uses modern Python tooling:
 
 ### Prerequisites
 
@@ -220,8 +220,8 @@ pytest-diff uses modern Python tooling:
 
 ```bash
 # Clone the repository
-git clone https://github.com/paulmilesi/pytest-diff.git
-cd pytest-diff
+git clone https://github.com/paulmilesi/pytest-difftest.git
+cd pytest-difftest
 
 # Install mise (if not already installed)
 curl https://mise.run | sh
@@ -250,7 +250,7 @@ cargo bench
 ```
 pytest (Python)
     ↓
-pytest-diff plugin (Python)
+pytest-difftest plugin (Python)
     ├── plugin.py        — pytest hooks & orchestration
     ├── _config.py       — configuration helpers
     ├── _git.py          — git commit SHA & staleness checks
@@ -258,7 +258,7 @@ pytest-diff plugin (Python)
     ├── _xdist.py        — pytest-xdist coordination
     └── storage/         — S3 & local backends
     ↓ (PyO3 bindings)
-pytest-diff-core (Rust)
+pytest-difftest-core (Rust)
     ├── AST Parser (RustPython parser)
     ├── Fingerprint Engine (CRC32)
     └── Database Layer (SQLite + LRU Cache)

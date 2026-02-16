@@ -1,5 +1,5 @@
 [package]
-name = "pytest-diff-core"
+name = "pytest-difftest-core"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
@@ -7,7 +7,7 @@ license.workspace = true
 repository.workspace = true
 
 [lib]
-name = "pytest_diff_core"
+name = "pytest_difftest_core"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]

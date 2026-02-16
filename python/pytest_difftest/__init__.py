@@ -1,5 +1,5 @@
 """
-pytest-diff: Blazingly fast test selection for pytest
+pytest-difftest: Blazingly fast test selection for pytest
 
 Only run tests affected by your changes, powered by Rust.
 """

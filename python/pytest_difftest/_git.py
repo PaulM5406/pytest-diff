@@ -1,4 +1,4 @@
-"""Git helpers for pytest-diff.
+"""Git helpers for pytest-difftest.
 
 Extracted from plugin.py to keep the main module focused on pytest hooks.
 """

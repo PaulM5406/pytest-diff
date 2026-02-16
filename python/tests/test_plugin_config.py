@@ -4,25 +4,25 @@ Tests for plugin registration, CLI/ini options, and precedence.
 
 
 def test_plugin_not_registered_without_flags(pytester):
-    """No pytest-diff output when neither --diff nor --diff-baseline passed."""
+    """No pytest-difftest output when neither --diff nor --diff-baseline passed."""
     pytester.makepyfile("def test_noop(): pass")
     result = pytester.runpytest_subprocess("-v")
     result.assert_outcomes(passed=1)
-    result.stdout.no_fnmatch_line("*pytest-diff: Using database*")
+    result.stdout.no_fnmatch_line("*pytest-difftest: Using database*")
 
 
 def test_plugin_registered_with_diff_flag(pytester):
     """Plugin activates with --diff."""
     pytester.makepyfile("def test_noop(): pass")
     result = pytester.runpytest_subprocess("--diff", "-v")
-    result.stdout.fnmatch_lines(["*pytest-diff*"])
+    result.stdout.fnmatch_lines(["*pytest-difftest*"])
 
 
 def test_plugin_registered_with_baseline_flag(pytester):
     """Plugin activates with --diff-baseline."""
     pytester.makepyfile("def test_noop(): pass")
     result = pytester.runpytest_subprocess("--diff-baseline", "-v")
-    result.stdout.fnmatch_lines(["*pytest-diff*Baseline saved*"])
+    result.stdout.fnmatch_lines(["*pytest-difftest*Baseline saved*"])
 
 
 def test_help_shows_all_options(pytester):
@@ -43,7 +43,7 @@ def test_verbose_flag_produces_timing_output(sample_project):
     """--diff-v outputs timing messages."""
     result = sample_project.runpytest_subprocess("--diff-baseline", "--diff-v", "-v")
     result.assert_outcomes(passed=2)
-    result.stdout.fnmatch_lines(["*pytest-diff:*"])
+    result.stdout.fnmatch_lines(["*pytest-difftest:*"])
 
 
 def test_batch_size_cli_override(sample_project):

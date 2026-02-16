@@ -4,7 +4,7 @@ Direct tests for the _core Rust module (fingerprint, cache, database).
 These tests use tmp_path (standard pytest) instead of pytester.
 """
 
-from pytest_diff import _core
+from pytest_difftest import _core
 
 
 def test_parse_module_returns_blocks():

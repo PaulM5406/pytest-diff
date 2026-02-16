@@ -3,7 +3,7 @@ requires = ["maturin>=1.5,<2.0"]
 build-backend = "maturin"
 
 [project]
-name = "pytest-diff"
+name = "pytest-difftest"
 version = "0.1.0"
 description = "Blazingly fast test selection for pytest - only run tests affected by your changes (Rust-powered)"
 readme = "README.md"
@@ -45,19 +45,19 @@ test = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/paulmilesi/pytest-diff"
-Repository = "https://github.com/paulmilesi/pytest-diff"
-Issues = "https://github.com/paulmilesi/pytest-diff/issues"
+Homepage = "https://github.com/paulmilesi/pytest-difftest"
+Repository = "https://github.com/paulmilesi/pytest-difftest"
+Issues = "https://github.com/paulmilesi/pytest-difftest/issues"
 
 [project.scripts]
-pytest-diff = "pytest_diff.cli:main"
+pytest-difftest = "pytest_difftest.cli:main"
 
 [project.entry-points.pytest11]
-diff = "pytest_diff.plugin"
+diff = "pytest_difftest.plugin"
 
 [tool.maturin]
 python-source = "python"
-module-name = "pytest_diff._core"
+module-name = "pytest_difftest._core"
 features = ["pyo3/extension-module"]
 
 [tool.pytest.ini_options]

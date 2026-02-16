@@ -1,8 +1,8 @@
-"""Remote baseline storage backends for pytest-diff."""
+"""Remote baseline storage backends for pytest-difftest."""
 
 from __future__ import annotations
 
-from pytest_diff.storage.base import BaselineStorage, StorageAuthenticationError
+from pytest_difftest.storage.base import BaselineStorage, StorageAuthenticationError
 
 
 def get_storage(url: str) -> BaselineStorage | None:
@@ -15,12 +15,12 @@ def get_storage(url: str) -> BaselineStorage | None:
     Returns ``None`` if the scheme is not recognised.
     """
     if url.startswith("file://"):
-        from pytest_diff.storage.local import LocalStorage
+        from pytest_difftest.storage.local import LocalStorage
 
         return LocalStorage(url)
 
     if url.startswith("s3://"):
-        from pytest_diff.storage.s3 import S3Storage
+        from pytest_difftest.storage.s3 import S3Storage
 
         return S3Storage(url)
 

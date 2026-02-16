@@ -1,4 +1,4 @@
-"""Configuration helpers for pytest-diff.
+"""Configuration helpers for pytest-difftest.
 
 Extracted from plugin.py to keep the main module focused on pytest hooks.
 """
@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     import pytest
 
-logger = logging.getLogger("pytest_diff")
+logger = logging.getLogger("pytest_difftest")
 
 
 def get_rootdir(config: pytest.Config) -> Path:
@@ -145,14 +145,14 @@ def check_scope_mismatch(
     current_display = ", ".join(current_scope) or "."
     if is_baseline:
         logger.warning(
-            "⚠ pytest-diff: Scope mismatch — baseline was built with [%s] "
+            "⚠ pytest-difftest: Scope mismatch — baseline was built with [%s] "
             "but current run uses [%s]. Running all tests to rebuild baseline.",
             baseline_display,
             current_display,
         )
     else:
         logger.warning(
-            "⚠ pytest-diff: Scope mismatch — baseline was built with [%s] "
+            "⚠ pytest-difftest: Scope mismatch — baseline was built with [%s] "
             "but current run uses [%s]. "
             "Some tests may not be selected. "
             "Consider re-running: pytest --diff-baseline %s",

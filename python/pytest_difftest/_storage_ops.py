@@ -1,4 +1,4 @@
-"""Remote storage operations for pytest-diff.
+"""Remote storage operations for pytest-difftest.
 
 Extracted from plugin.py to keep the main module focused on pytest hooks.
 """
@@ -10,7 +10,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-logger = logging.getLogger("pytest_diff")
+logger = logging.getLogger("pytest_difftest")
 
 
 def parse_remote_url(url: str) -> tuple[str, str]:
@@ -35,7 +35,7 @@ def download_remote_databases(remote_url: str, dest_dir: Path) -> list[Path]:
     *remote_url* must be a prefix URL (ending with ``/``).
     Returns the list of downloaded file paths.
     """
-    from pytest_diff.storage import get_storage
+    from pytest_difftest.storage import get_storage
 
     base_url, _ = parse_remote_url(remote_url)
     storage = get_storage(base_url)
@@ -59,13 +59,13 @@ def init_storage(
     if storage is not None or not remote_url:
         return storage
     try:
-        from pytest_diff.storage import get_storage
+        from pytest_difftest.storage import get_storage
 
         storage = get_storage(remote_url)
         if storage is None:
-            logger.warning("⚠ pytest-diff: Unsupported remote URL scheme: %s", remote_url)
+            logger.warning("⚠ pytest-difftest: Unsupported remote URL scheme: %s", remote_url)
     except Exception as e:
-        logger.warning("⚠ pytest-diff: Failed to initialize remote storage: %s", e)
+        logger.warning("⚠ pytest-difftest: Failed to initialize remote storage: %s", e)
     return storage
 
 
@@ -133,7 +133,7 @@ def _download_single_baseline(
             time.time() - import_start,
         )
         logger.info(
-            "✓ pytest-diff: Imported %s baseline fingerprints"
+            "✓ pytest-difftest: Imported %s baseline fingerprints"
             " and %s test executions from remote into %s",
             result.baseline_count,
             result.test_execution_count,
@@ -142,7 +142,7 @@ def _download_single_baseline(
         db.set_metadata("remote_baseline_etag", "1")
         _check_baseline_staleness(db, rootdir, log)
     except Exception as e:
-        logger.warning("⚠ pytest-diff: Failed to import remote baseline: %s", e)
+        logger.warning("⚠ pytest-difftest: Failed to import remote baseline: %s", e)
 
     return storage
 
@@ -151,11 +151,11 @@ def _check_baseline_staleness(db: Any, rootdir: str, log: Any) -> None:
     """Check if the baseline is stale compared to git history."""
     baseline_commit = db.get_metadata("baseline_commit")
     if baseline_commit:
-        from pytest_diff._git import check_baseline_staleness
+        from pytest_difftest._git import check_baseline_staleness
 
         warning = check_baseline_staleness(baseline_commit, rootdir)
         if warning:
-            logger.warning("⚠ pytest-diff: %s", warning)
+            logger.warning("⚠ pytest-difftest: %s", warning)
     else:
         log.debug("No baseline_commit metadata found — skipping staleness check")
 
@@ -182,7 +182,7 @@ def upload_baseline(
     log.debug("Uploaded baseline in %.3fs", time.time() - upload_start)
     assert remote_url is not None
     url = remote_url.rstrip("/") + "/" + remote_key.lstrip("/")
-    logger.info("✓ pytest-diff: Uploaded baseline to %s", url)
+    logger.info("✓ pytest-difftest: Uploaded baseline to %s", url)
 
     return storage
 
@@ -192,7 +192,7 @@ def upload_to_remote(remote_url: str, local_path: Path) -> None:
 
     *remote_url* must point to a specific file (not a prefix).
     """
-    from pytest_diff.storage import get_storage
+    from pytest_difftest.storage import get_storage
 
     base_url, key = parse_remote_url(remote_url)
     if not key:

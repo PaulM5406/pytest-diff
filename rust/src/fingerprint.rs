@@ -90,7 +90,7 @@ pub(crate) fn calculate_fingerprint_internal(path: &str) -> Result<Fingerprint> 
 /// Should be called after tests pass to set the baseline.
 ///
 /// # Arguments
-/// * `db_path` - Path to the pytest-diff database
+/// * `db_path` - Path to the pytest-difftest database
 /// * `project_root` - Root directory of the project
 /// * `verbose` - Whether to print debug information
 /// * `scope_paths` - List of directory paths to limit the scope (e.g., ["tests/unit/"])
@@ -138,7 +138,7 @@ fn save_baseline_internal(
     let find_start = Instant::now();
     let python_files = find_python_files(project_root, &scope_paths)?;
     eprint!(
-        "\rpytest-diff: Scanning {} Python files...",
+        "\rpytest-difftest: Scanning {} Python files...",
         python_files.len()
     );
     if verbose {
@@ -188,7 +188,7 @@ fn save_baseline_internal(
             let interval = if verbose { 50 } else { 200 };
             if count.is_multiple_of(interval) || count == total_files {
                 eprint!(
-                    "\rpytest-diff: Fingerprinting files... {}/{} ({:.0}%)  ",
+                    "\rpytest-difftest: Fingerprinting files... {}/{} ({:.0}%)  ",
                     count,
                     total_files,
                     count as f64 / total_files as f64 * 100.0
@@ -248,7 +248,7 @@ fn save_baseline_internal(
     let changed_file_count = total_files - unchanged_count;
     // Clear the progress line
     eprint!(
-        "\rpytest-diff: Fingerprinted {} files ({} changed, {} unchanged) in {:.1}s\n",
+        "\rpytest-difftest: Fingerprinted {} files ({} changed, {} unchanged) in {:.1}s\n",
         total_files,
         changed_file_count,
         unchanged_count,
@@ -279,7 +279,7 @@ fn save_baseline_internal(
     let changed_count = fingerprints_to_save.len();
     if changed_count > 0 {
         eprint!(
-            "pytest-diff: Writing {} fingerprints to database...",
+            "pytest-difftest: Writing {} fingerprints to database...",
             changed_count
         );
     }
@@ -322,7 +322,7 @@ fn save_baseline_internal(
 /// 3. block checksum comparison (precise - per-function/class checksums)
 ///
 /// # Arguments
-/// * `db_path` - Path to the pytest-diff database
+/// * `db_path` - Path to the pytest-difftest database
 /// * `project_root` - Root directory of the project
 /// * `scope_paths` - List of directory paths to limit the scope (e.g., ["tests/unit/"])
 ///
@@ -635,7 +635,10 @@ fn process_coverage_data_internal(
                     Ok(fp) => fp,
                     Err(e) => {
                         if verbose {
-                            eprintln!("⚠ pytest-diff: Could not fingerprint {}: {}", filename, e);
+                            eprintln!(
+                                "⚠ pytest-difftest: Could not fingerprint {}: {}",
+                                filename, e
+                            );
                         }
                         return None;
                     }
@@ -644,7 +647,10 @@ fn process_coverage_data_internal(
                     Ok(fp) => fp,
                     Err(e) => {
                         if verbose {
-                            eprintln!("⚠ pytest-diff: Could not fingerprint {}: {}", filename, e);
+                            eprintln!(
+                                "⚠ pytest-difftest: Could not fingerprint {}: {}",
+                                filename, e
+                            );
                         }
                         return None;
                     }

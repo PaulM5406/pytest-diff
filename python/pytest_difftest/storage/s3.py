@@ -1,6 +1,6 @@
 """Amazon S3 storage backend (``s3://`` URLs).
 
-Requires the ``boto3`` package (install with ``pip install pytest-diff[s3]``).
+Requires the ``boto3`` package (install with ``pip install pytest-difftest[s3]``).
 Uses the standard AWS credential chain (env vars, ``~/.aws/credentials``,
 IAM roles, etc.).
 
@@ -13,7 +13,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from pytest_diff.storage.base import BaselineStorage, StorageAuthenticationError
+from pytest_difftest.storage.base import BaselineStorage, StorageAuthenticationError
 
 
 class S3Storage(BaselineStorage):
@@ -37,7 +37,7 @@ class S3Storage(BaselineStorage):
                 import boto3
             except ImportError as exc:
                 raise ImportError(
-                    "boto3 is required for S3 storage. Install with: pip install pytest-diff[s3]"
+                    "boto3 is required for S3 storage. Install with: pip install pytest-difftest[s3]"
                 ) from exc
             self._client = boto3.client("s3")
         return self._client

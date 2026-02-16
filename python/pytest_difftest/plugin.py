@@ -1,5 +1,5 @@
 """
-Main pytest plugin for pytest-diff
+Main pytest plugin for pytest-difftest
 
 This module integrates with pytest to provide intelligent test selection
 based on code changes.
@@ -12,7 +12,7 @@ import sys
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from pytest_diff._config import (
+from pytest_difftest._config import (
     check_scope_mismatch,
     get_config_value,
     get_rootdir,
@@ -20,9 +20,9 @@ from pytest_diff._config import (
     get_workerinput,
     relative_scope_paths,
 )
-from pytest_diff._git import get_git_commit_sha
-from pytest_diff._storage_ops import download_and_import_baseline, upload_baseline
-from pytest_diff._xdist import is_xdist_controller, is_xdist_worker
+from pytest_difftest._git import get_git_commit_sha
+from pytest_difftest._storage_ops import download_and_import_baseline, upload_baseline
+from pytest_difftest._xdist import is_xdist_controller, is_xdist_worker
 
 import _pytest.outcomes
 
@@ -30,20 +30,20 @@ if TYPE_CHECKING:
     import pytest
     from _pytest.terminal import TerminalReporter
 
-logger = logging.getLogger("pytest_diff")
+logger = logging.getLogger("pytest_difftest")
 
 # Coverage module will be imported when needed (not at module level)
 # to avoid caching None if not installed during initial import
 
 # Rust core will be imported when built with maturin
 try:
-    from pytest_diff import _core
+    from pytest_difftest import _core
 except ImportError:
     _core = None  # type: ignore[assignment]  # Allow import before building
 
 
 class PytestDiffPlugin:
-    """Main plugin class for pytest-diff"""
+    """Main plugin class for pytest-difftest"""
 
     def __init__(self, config: pytest.Config) -> None:
         self.config: pytest.Config = config
@@ -77,7 +77,7 @@ class PytestDiffPlugin:
 
         if _core is None:
             raise ImportError(
-                "pytest-diff Rust core not found. Please install with: pip install pytest-diff"
+                "pytest-difftest Rust core not found. Please install with: pip install pytest-difftest"
             )
 
         # Remote storage configuration
@@ -90,7 +90,7 @@ class PytestDiffPlugin:
         if self.remote_url and self.remote_url.endswith("/"):
             raise ValueError(
                 f"--diff-remote requires a single file URL, not a prefix: {self.remote_url}\n"
-                "  Use 'pytest-diff merge --from-remote' to merge multiple baselines from a prefix."
+                "  Use 'pytest-difftest merge --from-remote' to merge multiple baselines from a prefix."
             )
 
         # If remote URL points to a specific .db file, extract it as the remote key
@@ -106,9 +106,9 @@ class PytestDiffPlugin:
         self.storage: Any = None
 
         # Initialize components - store database in pytest cache folder
-        cache_dir = get_rootdir(config) / ".pytest_cache" / "pytest-diff"
+        cache_dir = get_rootdir(config) / ".pytest_cache" / "pytest-difftest"
         cache_dir.mkdir(parents=True, exist_ok=True)
-        self.db_path: Path = cache_dir / "pytest_diff.db"
+        self.db_path: Path = cache_dir / "pytest_difftest.db"
         self.db: _core.PytestDiffDatabase | None = None
         self.cov: Any = None
         self.fp_cache: _core.FingerprintCache | None = (
@@ -206,7 +206,7 @@ class PytestDiffPlugin:
                 len(affected_test_files),
             )
         except Exception as e:
-            logger.warning("⚠ pytest-diff: Early diff analysis failed: %s", e)
+            logger.warning("⚠ pytest-difftest: Early diff analysis failed: %s", e)
             self._early_diff_data = None
 
     @staticmethod
@@ -227,12 +227,12 @@ class PytestDiffPlugin:
         import time
 
         batch_len = len(self.test_execution_batch)
-        logger.info("pytest-diff: Saving %s test executions to DB...", batch_len)
+        logger.info("pytest-difftest: Saving %s test executions to DB...", batch_len)
         flush_start = time.time()
         for nodeid, fingerprints, duration, failed in self.test_execution_batch:
             self.db.save_test_execution(nodeid, fingerprints, duration, failed, self.python_version)
         elapsed = time.time() - flush_start
-        logger.info("pytest-diff: Saved %s test executions to DB in %.1fs", batch_len, elapsed)
+        logger.info("pytest-difftest: Saved %s test executions to DB in %.1fs", batch_len, elapsed)
         logger.debug("Flushed %s test executions to DB in %.3fs", batch_len, elapsed)
         self.test_execution_batch = []
 
@@ -261,7 +261,7 @@ class PytestDiffPlugin:
         logger.debug("Configuring as xdist worker")
 
         # Get DB path from workerinput (set by controller in pytest_configure_node)
-        db_path_str = get_workerinput(config).get("pytest_diff_db_path")
+        db_path_str = get_workerinput(config).get("pytest_difftest_db_path")
         if db_path_str:
             self.db_path = Path(db_path_str)
             logger.debug("Worker using DB path from controller: %s", self.db_path)
@@ -272,7 +272,7 @@ class PytestDiffPlugin:
             self.db = _core.PytestDiffDatabase(str(self.db_path))
             logger.debug("Worker opened database in %.3fs", time.time() - db_start)
         except Exception as e:
-            logger.warning("⚠ pytest-diff worker: Could not open database: %s", e)
+            logger.warning("⚠ pytest-difftest worker: Could not open database: %s", e)
             self.enabled = False
             return
 
@@ -291,8 +291,8 @@ class PytestDiffPlugin:
 
         # Reconstruct early diff data from workerinput (controller already computed it)
         workerinput = get_workerinput(config)
-        known = workerinput.get("pytest_diff_known_test_files")
-        affected = workerinput.get("pytest_diff_affected_test_files")
+        known = workerinput.get("pytest_difftest_known_test_files")
+        affected = workerinput.get("pytest_difftest_affected_test_files")
         if known is not None and affected is not None:
             self._early_diff_data = {
                 "changed": None,
@@ -326,9 +326,9 @@ class PytestDiffPlugin:
             self.db = _core.PytestDiffDatabase(str(self.db_path))
             logger.debug("Database opened in %.3fs", time.time() - db_start)
             if not (self.remote_url and not self.baseline):
-                logger.info("✓ pytest-diff: Using database at %s", self.db_path)
+                logger.info("✓ pytest-difftest: Using database at %s", self.db_path)
         except Exception as e:
-            logger.warning("⚠ pytest-diff: Could not open database: %s", e)
+            logger.warning("⚠ pytest-difftest: Could not open database: %s", e)
             # Try to delete corrupted database and create fresh
             try:
                 if self.db_path.exists():
@@ -342,7 +342,7 @@ class PytestDiffPlugin:
                 self.db = _core.PytestDiffDatabase(str(self.db_path))
                 logger.debug("Database created in %.3fs", time.time() - db_start)
             except Exception as e2:
-                logger.warning("⚠ pytest-diff: Failed to create database: %s", e2)
+                logger.warning("⚠ pytest-difftest: Failed to create database: %s", e2)
                 self.enabled = False
                 return
 
@@ -375,7 +375,7 @@ class PytestDiffPlugin:
                 import pytest
 
                 pytest.exit(
-                    f"pytest-diff: Failed to download remote baseline — aborting.\n  {e}",
+                    f"pytest-difftest: Failed to download remote baseline — aborting.\n  {e}",
                     returncode=1,
                 )
 
@@ -488,7 +488,7 @@ class PytestDiffPlugin:
 
                     if changed.has_changes():
                         logger.info(
-                            "\n✓ pytest-diff: Incremental baseline — %s modified files",
+                            "\n✓ pytest-difftest: Incremental baseline — %s modified files",
                             len(changed.modified),
                         )
                         affected_tests = set(self.db.get_affected_tests(changed.changed_blocks))
@@ -505,13 +505,15 @@ class PytestDiffPlugin:
                                 config.hook.pytest_deselected(items=self.deselected_items)
                         else:
                             # Changes detected but no tests affected — skip all
-                            logger.info("\n✓ pytest-diff: Incremental baseline — no tests affected")
+                            logger.info(
+                                "\n✓ pytest-difftest: Incremental baseline — no tests affected"
+                            )
                             self.deselected_items = items[:]
                             items[:] = []
                             config.hook.pytest_deselected(items=self.deselected_items)
                     elif unrecorded_tests:
                         logger.info(
-                            "\n✓ pytest-diff: Incremental baseline — %s unrecorded tests",
+                            "\n✓ pytest-difftest: Incremental baseline — %s unrecorded tests",
                             len(unrecorded_tests),
                         )
                         selected = [item for item in items if item.nodeid in unrecorded_tests]
@@ -521,13 +523,13 @@ class PytestDiffPlugin:
                             config.hook.pytest_deselected(items=self.deselected_items)
                     else:
                         # No changes — skip all tests
-                        logger.info("\n✓ pytest-diff: No changes detected — skipping all tests")
+                        logger.info("\n✓ pytest-difftest: No changes detected — skipping all tests")
                         self.deselected_items = items[:]
                         items[:] = []
                         config.hook.pytest_deselected(items=self.deselected_items)
                 except Exception as e:
                     # On error, fall through to run all tests
-                    logger.warning("\n⚠ pytest-diff: Error during incremental detection: %s", e)
+                    logger.warning("\n⚠ pytest-difftest: Error during incremental detection: %s", e)
                     logger.info("  Running all tests")
                 return
             # else: empty DB, fall through to run all tests
@@ -559,7 +561,9 @@ class PytestDiffPlugin:
                 logger.info("  %s unrecorded tests will be re-run", len(unrecorded_tests))
 
             if changed.has_changes():
-                logger.info("\n✓ pytest-diff: Detected %s modified files", len(changed.modified))
+                logger.info(
+                    "\n✓ pytest-difftest: Detected %s modified files", len(changed.modified)
+                )
                 logger.info("  Changed blocks in %s files", len(changed.changed_blocks))
 
                 # Get affected tests from database
@@ -602,7 +606,7 @@ class PytestDiffPlugin:
                         items[:] = []
                         config.hook.pytest_deselected(items=self.deselected_items)
             elif unrecorded_tests:
-                logger.info("\n✓ pytest-diff: No changes detected")
+                logger.info("\n✓ pytest-difftest: No changes detected")
                 # Run unrecorded tests (previously failed)
                 selected = [item for item in items if item.nodeid in unrecorded_tests]
                 self.deselected_items = [item for item in items if item not in selected]
@@ -614,13 +618,13 @@ class PytestDiffPlugin:
                 if self.deselected_items:
                     config.hook.pytest_deselected(items=self.deselected_items)
             else:
-                logger.info("\n✓ pytest-diff: No changes detected")
+                logger.info("\n✓ pytest-difftest: No changes detected")
                 logger.info("  Skipping all %s tests", len(items))
                 self.deselected_items = items
                 items[:] = []
                 config.hook.pytest_deselected(items=self.deselected_items)
         except Exception as e:
-            logger.warning("\n⚠ pytest-diff: Error during change detection: %s", e)
+            logger.warning("\n⚠ pytest-difftest: Error during change detection: %s", e)
             logger.info("  Running all tests")
             import traceback
 
@@ -751,7 +755,7 @@ class PytestDiffPlugin:
                     )
                 except Exception as e:
                     if self.config.option.verbose:
-                        logger.warning("⚠ pytest-diff: Error processing coverage: %s", e)
+                        logger.warning("⚠ pytest-difftest: Error processing coverage: %s", e)
                         import traceback
 
                         traceback.print_exc()
@@ -792,7 +796,7 @@ class PytestDiffPlugin:
         except Exception as e:
             # Don't fail the test run if we can't save to database
             if self.config.option.verbose:
-                logger.warning("⚠ pytest-diff: Could not save test execution: %s", e)
+                logger.warning("⚠ pytest-difftest: Could not save test execution: %s", e)
 
     def pytest_terminal_summary(self, terminalreporter: TerminalReporter) -> None:
         """Show summary of deselected tests"""
@@ -834,7 +838,7 @@ class PytestDiffPlugin:
                     if self.upload and self.remote_url
                     else ""
                 )
-                logger.info("pytest-diff: Saving baseline fingerprints...%s", upload_msg)
+                logger.info("pytest-difftest: Saving baseline fingerprints...%s", upload_msg)
                 start = time.time()
                 count = _core.save_baseline(
                     str(self.db_path),
@@ -848,7 +852,7 @@ class PytestDiffPlugin:
                 db_size = self._format_size(self.db_path.stat().st_size)
                 terminalreporter.write_sep(
                     "=",
-                    f"pytest-diff: Baseline saved for {count} files in {elapsed:.1f}s ({db_size})",
+                    f"pytest-difftest: Baseline saved for {count} files in {elapsed:.1f}s ({db_size})",
                     green=True,
                 )
 
@@ -868,7 +872,7 @@ class PytestDiffPlugin:
             except Exception as e:
                 terminalreporter.write_sep(
                     "=",
-                    f"pytest-diff: Failed to save baseline: {e}",
+                    f"pytest-difftest: Failed to save baseline: {e}",
                     red=True,
                 )
                 return
@@ -892,7 +896,7 @@ class PytestDiffPlugin:
                 except Exception as e:
                     terminalreporter.write_sep(
                         "=",
-                        f"pytest-diff: Failed to upload baseline to remote storage: {e}",
+                        f"pytest-difftest: Failed to upload baseline to remote storage: {e}",
                         red=True,
                     )
             return
@@ -900,7 +904,7 @@ class PytestDiffPlugin:
         if self.deselected_items:
             terminalreporter.write_sep(
                 "=",
-                f"pytest-diff: {len(self.deselected_items)} tests deselected",
+                f"pytest-difftest: {len(self.deselected_items)} tests deselected",
                 green=True,
             )
 
@@ -913,7 +917,7 @@ class PytestDiffPlugin:
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:
-    """Add command-line options for pytest-diff
+    """Add command-line options for pytest-difftest
 
     Options can also be set in pyproject.toml under [tool.pytest.ini_options]:
 
@@ -921,12 +925,12 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         diff_batch_size = 50
         diff_cache_size = 200000
     """
-    group = parser.getgroup("diff", "pytest-diff test selection")
+    group = parser.getgroup("diff", "pytest-difftest test selection")
 
     group.addoption(
         "--diff",
         action="store_true",
-        help="Enable pytest-diff (select tests based on changes)",
+        help="Enable pytest-difftest (select tests based on changes)",
     )
 
     group.addoption(
@@ -944,7 +948,7 @@ def pytest_addoption(parser: pytest.Parser) -> None:
     group.addoption(
         "--diff-v",
         action="store_true",
-        help="Enable verbose logging for pytest-diff (shows timing and debug info)",
+        help="Enable verbose logging for pytest-difftest (shows timing and debug info)",
     )
 
     group.addoption(
@@ -1009,7 +1013,7 @@ def pytest_configure(config: pytest.Config) -> None:
         or config.getoption("--diff-force")
     ):
         plugin = PytestDiffPlugin(config)
-        config.pluginmanager.register(plugin, "pytest_diff")
+        config.pluginmanager.register(plugin, "pytest_difftest")
 
 
 try:
@@ -1025,20 +1029,20 @@ try:
         The optionalhook=True tells pluggy to skip validation when xdist
         is not installed.
         """
-        plugin = node.config.pluginmanager.get_plugin("pytest_diff")
+        plugin = node.config.pluginmanager.get_plugin("pytest_difftest")
         if plugin is None or not plugin.enabled:
             return
 
         # Pass DB path to worker via workerinput dict
-        node.workerinput["pytest_diff_db_path"] = str(plugin.db_path)
-        node.workerinput["pytest_diff_initialized"] = True
+        node.workerinput["pytest_difftest_db_path"] = str(plugin.db_path)
+        node.workerinput["pytest_difftest_initialized"] = True
 
         # Pass early diff data so workers can skip unchanged files
         if plugin._early_diff_data:
-            node.workerinput["pytest_diff_known_test_files"] = list(
+            node.workerinput["pytest_difftest_known_test_files"] = list(
                 plugin._early_diff_data["known_test_files"]
             )
-            node.workerinput["pytest_diff_affected_test_files"] = list(
+            node.workerinput["pytest_difftest_affected_test_files"] = list(
                 plugin._early_diff_data["affected_test_files"]
             )
 except ImportError:

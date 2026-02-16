@@ -41,14 +41,14 @@ def test_database_corruption_recovery(pytester):
     pytester.makepyfile("def test_noop(): pass")
 
     # Create corrupted database
-    db_dir = pytester.path / ".pytest_cache" / "pytest-diff"
+    db_dir = pytester.path / ".pytest_cache" / "pytest-difftest"
     db_dir.mkdir(parents=True, exist_ok=True)
-    db_file = db_dir / "pytest_diff.db"
+    db_file = db_dir / "pytest_difftest.db"
     db_file.write_bytes(b"THIS IS NOT A VALID SQLITE DATABASE")
 
     result = pytester.runpytest_subprocess("--diff-baseline", "-v")
     # Plugin should recover by deleting and recreating
-    result.stdout.fnmatch_lines(["*pytest-diff*"])
+    result.stdout.fnmatch_lines(["*pytest-difftest*"])
     # Should still complete (may pass or fail depending on recovery)
     assert result.ret in (0, 1, 5)
 

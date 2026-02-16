@@ -31,9 +31,9 @@ pub struct ImportResult {
     pub test_execution_count: usize,
 }
 
-/// Main database interface for pytest-diff
+/// Main database interface for pytest-difftest
 ///
-/// Manages the pytest-diff SQLite database with optimizations:
+/// Manages the pytest-difftest SQLite database with optimizations:
 /// - WAL mode for concurrent access
 /// - Prepared statement caching
 /// - Memory-mapped I/O

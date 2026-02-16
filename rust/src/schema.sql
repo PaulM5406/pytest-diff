@@ -1,4 +1,4 @@
--- pytest-diff database schema
+-- pytest-difftest database schema
 
 -- Metadata table (key-value store for database info)
 CREATE TABLE IF NOT EXISTS metadata (

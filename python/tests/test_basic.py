@@ -1,5 +1,5 @@
 """
-Basic tests for pytest-diff plugin
+Basic tests for pytest-difftest plugin
 """
 
 
@@ -12,6 +12,6 @@ def test_plugin_registration(pytestconfig):
 
 def test_import_module():
     """Test that the module can be imported"""
-    import pytest_diff
+    import pytest_difftest
 
-    assert pytest_diff.__version__ == "0.1.0"
+    assert pytest_difftest.__version__ == "0.1.0"

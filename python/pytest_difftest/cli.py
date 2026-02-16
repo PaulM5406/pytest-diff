@@ -1,4 +1,4 @@
-"""CLI commands for pytest-diff."""
+"""CLI commands for pytest-difftest."""
 
 from __future__ import annotations
 
@@ -27,7 +27,7 @@ def _resolve_inputs(inputs: list[str]) -> tuple[list[str], Path | None]:
     Returns:
         (local_paths, temp_dir) — temp_dir is set if any remote files were downloaded.
     """
-    from pytest_diff._storage_ops import download_remote_databases
+    from pytest_difftest._storage_ops import download_remote_databases
 
     local_paths: list[str] = []
     temp_dir: Path | None = None
@@ -35,7 +35,7 @@ def _resolve_inputs(inputs: list[str]) -> tuple[list[str], Path | None]:
     for input_path in inputs:
         if _is_remote_url(input_path):
             if temp_dir is None:
-                temp_dir = Path(tempfile.mkdtemp(prefix="pytest_diff_merge_"))
+                temp_dir = Path(tempfile.mkdtemp(prefix="pytest_difftest_merge_"))
             remote_files = download_remote_databases(input_path, temp_dir)
             print(f"Downloaded {len(remote_files)} database(s) from {input_path}")
             local_paths.extend(str(f) for f in remote_files)
@@ -50,7 +50,7 @@ def _resolve_inputs(inputs: list[str]) -> tuple[list[str], Path | None]:
 
 
 def merge_databases(output: str, inputs: list[str]) -> int:
-    """Merge multiple pytest-diff databases into one.
+    """Merge multiple pytest-difftest databases into one.
 
     Args:
         output: Local path or remote URL (s3://...) for the merged database.
@@ -61,7 +61,7 @@ def merge_databases(output: str, inputs: list[str]) -> int:
     Returns:
         Exit code (0 for success, 1 for failure).
     """
-    from pytest_diff._core import PytestDiffDatabase
+    from pytest_difftest._core import PytestDiffDatabase
 
     if not inputs:
         print("Error: At least one input database required", file=sys.stderr)
@@ -119,7 +119,7 @@ def merge_databases(output: str, inputs: list[str]) -> int:
 
         # Upload if output is a remote URL
         if remote_output:
-            from pytest_diff._storage_ops import upload_to_remote
+            from pytest_difftest._storage_ops import upload_to_remote
 
             try:
                 upload_to_remote(remote_output, local_path)
@@ -158,23 +158,23 @@ def _check_merge_commit_consistency(db: Any, inputs: list[str]) -> None:
 
 
 def main() -> int:
-    """Main entry point for pytest-diff CLI."""
+    """Main entry point for pytest-difftest CLI."""
     parser = argparse.ArgumentParser(
-        prog="pytest-diff",
-        description="pytest-diff command line tools",
+        prog="pytest-difftest",
+        description="pytest-difftest command line tools",
     )
     subparsers = parser.add_subparsers(dest="command", help="Available commands")
 
     # merge command
     merge_parser = subparsers.add_parser(
         "merge",
-        help="Merge multiple pytest-diff databases into one",
-        description="Merge multiple pytest-diff databases into one. "
+        help="Merge multiple pytest-difftest databases into one",
+        description="Merge multiple pytest-difftest databases into one. "
         "Output can be a local path or a remote URL (s3://...). "
         "Inputs can be local files, local directories, or remote URLs "
         "(prefix ending with / downloads all .db files). "
-        "Usage: pytest-diff merge output.db input1.db input2.db "
-        "or: pytest-diff merge s3://bucket/baseline.db s3://bucket/run-123/",
+        "Usage: pytest-difftest merge output.db input1.db input2.db "
+        "or: pytest-difftest merge s3://bucket/baseline.db s3://bucket/run-123/",
     )
     merge_parser.add_argument(
         "output",

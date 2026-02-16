@@ -10,7 +10,7 @@ def test_baseline_revert_scenario():
     """Test that reverting changes is properly detected with baseline"""
     import time
 
-    from pytest_diff import _core
+    from pytest_difftest import _core
 
     with tempfile.TemporaryDirectory() as tmpdir:
         tmpdir = Path(tmpdir)
@@ -22,7 +22,7 @@ def test_baseline_revert_scenario():
 
         # Step 1: Write original code and save baseline
         module_file.write_text(original_code)
-        db_path = tmpdir / "pytest_diff.db"
+        db_path = tmpdir / "pytest_difftest.db"
         scope_paths = [str(tmpdir)]
         count = _core.save_baseline(str(db_path), str(tmpdir), False, scope_paths)
         assert count == 1, "Should save baseline for 1 file"
@@ -56,7 +56,7 @@ def test_baseline_revert_scenario():
 
 def test_save_baseline_function():
     """Test the save_baseline function directly"""
-    from pytest_diff import _core
+    from pytest_difftest import _core
 
     with tempfile.TemporaryDirectory() as tmpdir:
         tmpdir = Path(tmpdir)
@@ -67,7 +67,7 @@ def test_save_baseline_function():
         (tmpdir / "subdir").mkdir()
         (tmpdir / "subdir" / "module3.py").write_text("def baz(): pass")
 
-        db_path = tmpdir / "pytest_diff.db"
+        db_path = tmpdir / "pytest_difftest.db"
         scope_paths = [str(tmpdir)]
 
         # Save baseline
@@ -82,7 +82,7 @@ def test_save_baseline_function():
 
 def test_baseline_detects_no_change_on_revert():
     """Test that detect_changes returns no changes after reverting to baseline"""
-    from pytest_diff import _core
+    from pytest_difftest import _core
 
     with tempfile.TemporaryDirectory() as tmpdir:
         tmpdir = Path(tmpdir)
@@ -92,7 +92,7 @@ def test_baseline_detects_no_change_on_revert():
         original = "def add(a, b):\n    return a + b\n"
         module.write_text(original)
 
-        db_path = tmpdir / "pytest_diff.db"
+        db_path = tmpdir / "pytest_difftest.db"
         scope_paths = [str(tmpdir)]
 
         # Save baseline with original code

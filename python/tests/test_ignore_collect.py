@@ -179,7 +179,7 @@ def test_is_test_file_helper():
     """Test the _is_test_file method uses pytest's python_files patterns."""
     from unittest.mock import MagicMock
 
-    from pytest_diff.plugin import PytestDiffPlugin
+    from pytest_difftest.plugin import PytestDiffPlugin
 
     plugin = MagicMock(spec=PytestDiffPlugin)
     # Default pytest python_files patterns

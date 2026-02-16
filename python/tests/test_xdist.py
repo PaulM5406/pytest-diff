@@ -12,7 +12,7 @@ class TestXdistHelpers:
 
     def test_is_xdist_worker(self, pytestconfig):
         """is_xdist_worker returns correct value based on context."""
-        from pytest_diff._xdist import is_xdist_worker
+        from pytest_difftest._xdist import is_xdist_worker
 
         result = is_xdist_worker(pytestconfig)
         expected = hasattr(pytestconfig, "workerinput")
@@ -20,7 +20,7 @@ class TestXdistHelpers:
 
     def test_is_xdist_controller(self, pytestconfig):
         """is_xdist_controller returns correct value based on context."""
-        from pytest_diff._xdist import is_xdist_controller
+        from pytest_difftest._xdist import is_xdist_controller
 
         result = is_xdist_controller(pytestconfig)
         # Controller has workercount but not workerinput
@@ -29,7 +29,7 @@ class TestXdistHelpers:
 
     def test_get_worker_id(self, pytestconfig):
         """get_worker_id returns worker ID or None based on context."""
-        from pytest_diff._xdist import get_worker_id
+        from pytest_difftest._xdist import get_worker_id
 
         result = get_worker_id(pytestconfig)
         if hasattr(pytestconfig, "workerinput"):
@@ -90,7 +90,7 @@ class TestXdistDbCoordination:
         result.assert_outcomes(passed=2)
 
         # Check that DB exists
-        db_path = sample_project.path / ".pytest_cache" / "pytest-diff" / "pytest_diff.db"
+        db_path = sample_project.path / ".pytest_cache" / "pytest-difftest" / "pytest_difftest.db"
         assert db_path.exists()
 
         # Run again - should reuse same DB

@@ -5,7 +5,7 @@ from __future__ import annotations
 import shutil
 from pathlib import Path
 
-from pytest_diff.storage.base import BaselineStorage
+from pytest_difftest.storage.base import BaselineStorage
 
 
 class LocalStorage(BaselineStorage):

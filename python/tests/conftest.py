@@ -1,5 +1,5 @@
 """
-Shared fixtures for pytest-diff test suite.
+Shared fixtures for pytest-difftest test suite.
 
 Uses pytester for integration tests that run pytest in subprocess isolation.
 """

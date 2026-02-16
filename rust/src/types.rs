@@ -1,4 +1,4 @@
-// Core types for pytest-diff
+// Core types for pytest-difftest
 //
 // These types are exposed to Python via PyO3 and represent
 // the fundamental data structures used throughout the system.

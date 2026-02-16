@@ -23,7 +23,7 @@ def test_baseline_saves_fingerprints(sample_project):
 def test_baseline_creates_database(sample_project):
     """Database file exists after baseline run."""
     sample_project.runpytest_subprocess("--diff-baseline")
-    db_path = sample_project.path / ".pytest_cache" / "pytest-diff" / "pytest_diff.db"
+    db_path = sample_project.path / ".pytest_cache" / "pytest-difftest" / "pytest_difftest.db"
     assert db_path.exists(), f"Database not found at {db_path}"
 
 

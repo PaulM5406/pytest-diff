@@ -9,7 +9,7 @@ import pytest
 
 def _create_source_db(db_path: Path, py_file: Path) -> None:
     """Create a source database with a baseline fingerprint from a Python file."""
-    from pytest_diff._core import PytestDiffDatabase, calculate_fingerprint
+    from pytest_difftest._core import PytestDiffDatabase, calculate_fingerprint
 
     db = PytestDiffDatabase(str(db_path))
     db.save_baseline_fingerprint(calculate_fingerprint(str(py_file)))
@@ -20,7 +20,7 @@ class TestLocalStorage:
     """Tests for the local filesystem storage backend."""
 
     def test_upload_download_roundtrip(self, tmp_path: Path) -> None:
-        from pytest_diff.storage.local import LocalStorage
+        from pytest_difftest.storage.local import LocalStorage
 
         remote_dir = tmp_path / "remote"
         remote_dir.mkdir()
@@ -38,7 +38,7 @@ class TestLocalStorage:
         assert dest.read_bytes() == b"hello baseline"
 
     def test_download_not_found(self, tmp_path: Path) -> None:
-        from pytest_diff.storage.local import LocalStorage
+        from pytest_difftest.storage.local import LocalStorage
 
         remote_dir = tmp_path / "remote"
         remote_dir.mkdir()
@@ -48,7 +48,7 @@ class TestLocalStorage:
             storage.download("missing.db", tmp_path / "out.db")
 
     def test_download_cache_hit(self, tmp_path: Path) -> None:
-        from pytest_diff.storage.local import LocalStorage
+        from pytest_difftest.storage.local import LocalStorage
 
         remote_dir = tmp_path / "remote"
         remote_dir.mkdir()
@@ -79,7 +79,7 @@ class TestS3Storage:
         import boto3
         from moto import mock_aws  # type: ignore[import-not-found]
 
-        from pytest_diff.storage.s3 import S3Storage
+        from pytest_difftest.storage.s3 import S3Storage
 
         with mock_aws():
             client = boto3.client("s3", region_name="us-east-1")
@@ -127,8 +127,8 @@ class TestS3AuthErrors:
 
         from botocore.exceptions import ClientError
 
-        from pytest_diff.storage.base import StorageAuthenticationError
-        from pytest_diff.storage.s3 import S3Storage
+        from pytest_difftest.storage.base import StorageAuthenticationError
+        from pytest_difftest.storage.s3 import S3Storage
 
         storage = S3Storage("s3://test-bucket/prefix/")
         mock_client = MagicMock()
@@ -148,8 +148,8 @@ class TestS3AuthErrors:
 
         from botocore.exceptions import ClientError
 
-        from pytest_diff.storage.base import StorageAuthenticationError
-        from pytest_diff.storage.s3 import S3Storage
+        from pytest_difftest.storage.base import StorageAuthenticationError
+        from pytest_difftest.storage.s3 import S3Storage
 
         storage = S3Storage("s3://test-bucket/prefix/")
         mock_client = MagicMock()
@@ -170,7 +170,7 @@ class TestLocalStorageListAndDownloadAll:
     """Tests for list_baselines and download_all on local storage."""
 
     def test_list_baselines_empty(self, tmp_path: Path) -> None:
-        from pytest_diff.storage.local import LocalStorage
+        from pytest_difftest.storage.local import LocalStorage
 
         remote_dir = tmp_path / "remote"
         remote_dir.mkdir()
@@ -179,7 +179,7 @@ class TestLocalStorageListAndDownloadAll:
         assert storage.list_baselines() == []
 
     def test_list_baselines_finds_db_files(self, tmp_path: Path) -> None:
-        from pytest_diff.storage.local import LocalStorage
+        from pytest_difftest.storage.local import LocalStorage
 
         remote_dir = tmp_path / "remote"
         remote_dir.mkdir()
@@ -196,7 +196,7 @@ class TestLocalStorageListAndDownloadAll:
         assert "baselines/job2.db" in keys
 
     def test_download_all(self, tmp_path: Path) -> None:
-        from pytest_diff.storage.local import LocalStorage
+        from pytest_difftest.storage.local import LocalStorage
 
         remote_dir = tmp_path / "remote"
         remote_dir.mkdir()
@@ -220,8 +220,8 @@ class TestCliMerge:
     """Tests for the CLI merge command."""
 
     def test_merge_databases(self, tmp_path: Path) -> None:
-        from pytest_diff._core import PytestDiffDatabase, calculate_fingerprint
-        from pytest_diff.cli import merge_databases
+        from pytest_difftest._core import PytestDiffDatabase, calculate_fingerprint
+        from pytest_difftest.cli import merge_databases
 
         # Create Python files for fingerprinting
         foo_file = tmp_path / "foo.py"
@@ -255,13 +255,13 @@ class TestCliMerge:
         assert stats["baseline_count"] == 2
 
     def test_merge_no_inputs(self) -> None:
-        from pytest_diff.cli import merge_databases
+        from pytest_difftest.cli import merge_databases
 
         result = merge_databases("output.db", [])
         assert result == 1
 
     def test_merge_missing_input(self, tmp_path: Path) -> None:
-        from pytest_diff.cli import merge_databases
+        from pytest_difftest.cli import merge_databases
 
         result = merge_databases(str(tmp_path / "output.db"), ["/nonexistent/path.db"])
         assert result == 1
@@ -271,8 +271,8 @@ class TestCommitConsistencyWarning:
     """Tests for warnings when merging databases with different commits."""
 
     def test_cli_warns_on_different_commits(self, tmp_path: Path, capsys) -> None:
-        from pytest_diff._core import PytestDiffDatabase, calculate_fingerprint
-        from pytest_diff.cli import merge_databases
+        from pytest_difftest._core import PytestDiffDatabase, calculate_fingerprint
+        from pytest_difftest.cli import merge_databases
 
         # Create Python files
         foo_file = tmp_path / "foo.py"
@@ -305,8 +305,8 @@ class TestCommitConsistencyWarning:
         assert "bbbb1111" in captured.err
 
     def test_cli_no_warning_on_same_commits(self, tmp_path: Path, capsys) -> None:
-        from pytest_diff._core import PytestDiffDatabase, calculate_fingerprint
-        from pytest_diff.cli import merge_databases
+        from pytest_difftest._core import PytestDiffDatabase, calculate_fingerprint
+        from pytest_difftest.cli import merge_databases
 
         # Create Python files
         foo_file = tmp_path / "foo.py"
@@ -338,7 +338,7 @@ class TestCommitConsistencyWarning:
         assert "different commits" not in captured.err
 
     def test_get_external_metadata(self, tmp_path: Path) -> None:
-        from pytest_diff._core import PytestDiffDatabase
+        from pytest_difftest._core import PytestDiffDatabase
 
         # Create a database with metadata
         source_path = tmp_path / "source.db"
@@ -362,12 +362,12 @@ class TestParseRemoteUrl:
     """Tests for parse_remote_url helper."""
 
     def test_prefix_url(self) -> None:
-        from pytest_diff._storage_ops import parse_remote_url
+        from pytest_difftest._storage_ops import parse_remote_url
 
         assert parse_remote_url("s3://bucket/prefix/") == ("s3://bucket/prefix/", "")
 
     def test_file_url(self) -> None:
-        from pytest_diff._storage_ops import parse_remote_url
+        from pytest_difftest._storage_ops import parse_remote_url
 
         assert parse_remote_url("s3://bucket/path/baseline.db") == (
             "s3://bucket/path/",
@@ -375,7 +375,7 @@ class TestParseRemoteUrl:
         )
 
     def test_file_url_local(self) -> None:
-        from pytest_diff._storage_ops import parse_remote_url
+        from pytest_difftest._storage_ops import parse_remote_url
 
         assert parse_remote_url("file:///tmp/dir/baseline.db") == (
             "file:///tmp/dir/",
@@ -383,7 +383,7 @@ class TestParseRemoteUrl:
         )
 
     def test_prefix_url_local(self) -> None:
-        from pytest_diff._storage_ops import parse_remote_url
+        from pytest_difftest._storage_ops import parse_remote_url
 
         assert parse_remote_url("file:///tmp/dir/") == ("file:///tmp/dir/", "")
 
@@ -392,8 +392,8 @@ class TestCliMergeRemote:
     """Tests for CLI merge with remote support using file:// URLs."""
 
     def test_merge_from_remote_prefix(self, tmp_path: Path) -> None:
-        from pytest_diff._core import PytestDiffDatabase
-        from pytest_diff.cli import merge_databases
+        from pytest_difftest._core import PytestDiffDatabase
+        from pytest_difftest.cli import merge_databases
 
         # Set up remote directory with .db files
         remote_dir = tmp_path / "remote"
@@ -419,7 +419,7 @@ class TestCliMergeRemote:
         assert stats["baseline_count"] == 2
 
     def test_merge_to_remote(self, tmp_path: Path) -> None:
-        from pytest_diff.cli import merge_databases
+        from pytest_difftest.cli import merge_databases
 
         # Create local source databases
         foo_file = tmp_path / "foo.py"
@@ -446,8 +446,8 @@ class TestCliMergeRemote:
 
     def test_merge_full_remote_round_trip(self, tmp_path: Path) -> None:
         """Remote-to-remote merge: download from prefix, upload to remote URL."""
-        from pytest_diff._core import PytestDiffDatabase
-        from pytest_diff.cli import merge_databases
+        from pytest_difftest._core import PytestDiffDatabase
+        from pytest_difftest.cli import merge_databases
 
         # Set up remote source with .db files
         remote_src = tmp_path / "remote_src"
@@ -481,8 +481,8 @@ class TestCliMergeRemote:
 
     def test_merge_local_output_remote_input(self, tmp_path: Path) -> None:
         """Merge remote inputs into a local output path."""
-        from pytest_diff._core import PytestDiffDatabase
-        from pytest_diff.cli import merge_databases
+        from pytest_difftest._core import PytestDiffDatabase
+        from pytest_difftest.cli import merge_databases
 
         remote_src = tmp_path / "remote_src"
         remote_src.mkdir()
@@ -509,8 +509,8 @@ class TestCliMergeRemote:
         assert stats["baseline_count"] == 2
 
     def test_merge_mixed_local_and_remote(self, tmp_path: Path) -> None:
-        from pytest_diff._core import PytestDiffDatabase
-        from pytest_diff.cli import merge_databases
+        from pytest_difftest._core import PytestDiffDatabase
+        from pytest_difftest.cli import merge_databases
 
         # Set up remote source
         remote_dir = tmp_path / "remote"
@@ -543,7 +543,7 @@ class TestCliMergeRemote:
         assert stats["baseline_count"] == 3
 
     def test_merge_from_remote_empty_prefix(self, tmp_path: Path, capsys) -> None:
-        from pytest_diff.cli import merge_databases
+        from pytest_difftest.cli import merge_databases
 
         # Remote dir exists but has no .db files
         remote_dir = tmp_path / "remote"
@@ -560,8 +560,8 @@ class TestCliMergeRemote:
         assert "No .db files found" in captured.err
 
     def test_merge_from_local_directory(self, tmp_path: Path) -> None:
-        from pytest_diff._core import PytestDiffDatabase
-        from pytest_diff.cli import merge_databases
+        from pytest_difftest._core import PytestDiffDatabase
+        from pytest_difftest.cli import merge_databases
 
         # Set up a local directory with .db files
         input_dir = tmp_path / "inputs"
@@ -584,7 +584,7 @@ class TestCliMergeRemote:
         assert stats["baseline_count"] == 2
 
     def test_merge_no_inputs_error(self, capsys) -> None:
-        from pytest_diff.cli import merge_databases
+        from pytest_difftest.cli import merge_databases
 
         result = merge_databases("output.db", [])
 
@@ -600,9 +600,9 @@ class TestDownloadSingleBaselineCaching:
         """Second call with unchanged remote skips the destructive import."""
         import logging
 
-        from pytest_diff._core import PytestDiffDatabase
-        from pytest_diff._storage_ops import _download_single_baseline
-        from pytest_diff.storage.local import LocalStorage
+        from pytest_difftest._core import PytestDiffDatabase
+        from pytest_difftest._storage_ops import _download_single_baseline
+        from pytest_difftest.storage.local import LocalStorage
 
         # Set up a remote baseline
         remote_dir = tmp_path / "remote"
@@ -616,7 +616,7 @@ class TestDownloadSingleBaselineCaching:
         # Prepare the local DB
         cache_dir = tmp_path / "cache"
         cache_dir.mkdir()
-        db_path = cache_dir / "pytest_diff.db"
+        db_path = cache_dir / "pytest_difftest.db"
         db = PytestDiffDatabase(str(db_path))
         log = logging.getLogger("test")
 
@@ -637,9 +637,9 @@ class TestDownloadSingleBaselineCaching:
         """When remote baseline changes, it re-downloads and re-imports."""
         import logging
 
-        from pytest_diff._core import PytestDiffDatabase
-        from pytest_diff._storage_ops import _download_single_baseline
-        from pytest_diff.storage.local import LocalStorage
+        from pytest_difftest._core import PytestDiffDatabase
+        from pytest_difftest._storage_ops import _download_single_baseline
+        from pytest_difftest.storage.local import LocalStorage
 
         remote_dir = tmp_path / "remote"
         remote_dir.mkdir()
@@ -650,7 +650,7 @@ class TestDownloadSingleBaselineCaching:
         storage = LocalStorage(f"file://{remote_dir}")
         cache_dir = tmp_path / "cache"
         cache_dir.mkdir()
-        db_path = cache_dir / "pytest_diff.db"
+        db_path = cache_dir / "pytest_difftest.db"
         db = PytestDiffDatabase(str(db_path))
         log = logging.getLogger("test")
 
@@ -674,9 +674,9 @@ class TestDownloadSingleBaselineCaching:
         """When local DB is recreated (metadata lost), re-imports even on cache hit."""
         import logging
 
-        from pytest_diff._core import PytestDiffDatabase
-        from pytest_diff._storage_ops import _download_single_baseline
-        from pytest_diff.storage.local import LocalStorage
+        from pytest_difftest._core import PytestDiffDatabase
+        from pytest_difftest._storage_ops import _download_single_baseline
+        from pytest_difftest.storage.local import LocalStorage
 
         remote_dir = tmp_path / "remote"
         remote_dir.mkdir()
@@ -687,7 +687,7 @@ class TestDownloadSingleBaselineCaching:
         storage = LocalStorage(f"file://{remote_dir}")
         cache_dir = tmp_path / "cache"
         cache_dir.mkdir()
-        db_path = cache_dir / "pytest_diff.db"
+        db_path = cache_dir / "pytest_difftest.db"
         db = PytestDiffDatabase(str(db_path))
         log = logging.getLogger("test")
 

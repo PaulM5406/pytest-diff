@@ -45,9 +45,9 @@ test = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/paulmilesi/pytest-difftest"
-Repository = "https://github.com/paulmilesi/pytest-difftest"
-Issues = "https://github.com/paulmilesi/pytest-difftest/issues"
+Homepage = "https://github.com/PaulM5406/pytest-difftest"
+Repository = "https://github.com/PaulM5406/pytest-difftest"
+Issues = "https://github.com/PaulM5406/pytest-difftest/issues"
 
 [project.scripts]
 pytest-difftest = "pytest_difftest.cli:main"
@@ -59,6 +59,7 @@ diff = "pytest_difftest.plugin"
 python-source = "python"
 module-name = "pytest_difftest._core"
 features = ["pyo3/extension-module"]
+compatibility = "manylinux2014"
 
 [tool.pytest.ini_options]
 testpaths = ["python/tests"]

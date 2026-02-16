@@ -4,7 +4,7 @@
 
 **Fast test selection for pytest** - Only run tests affected by your changes, powered by Rust 🦀
 
-[![CI](https://github.com/PaulM5406/pytest-difftest/workflows/CI/badge.svg)](https://github.com/paulmilesi/pytest-difftest/actions)
+[![CI](https://github.com/PaulM5406/pytest-difftest/workflows/CI/badge.svg)](https://github.com/PaulM5406/pytest-difftest/actions)
 [![PyPI](https://img.shields.io/pypi/v/pytest-difftest.svg)](https://pypi.org/project/pytest-difftest/)
 [![Python Versions](https://img.shields.io/pypi/pyversions/pytest-difftest.svg)](https://pypi.org/project/pytest-difftest/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
@@ -220,7 +220,7 @@ pytest-difftest uses modern Python tooling:
 
 ```bash
 # Clone the repository
-git clone https://github.com/paulmilesi/pytest-difftest.git
+git clone https://github.com/PaulM5406/pytest-difftest.git
 cd pytest-difftest
 
 # Install mise (if not already installed)

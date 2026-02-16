@@ -115,6 +115,7 @@ class PytestDiffPlugin:
             None  # Fingerprint cache for avoiding re-parsing
         )
         self.deselected_items: list[Any] = []
+        self._early_diff_data: dict[str, Any] | None = None
         self.current_test: str | None = None
         self.test_start_time: float | None = None
         self.test_files_executed: list[str] = []
@@ -133,10 +134,80 @@ class PytestDiffPlugin:
         # Cache size for fingerprints (configurable for large codebases)
         self.cache_max_size: int = get_config_value(config, "cache-size", "cache_size", 100_000)
 
+        # pytest's test file patterns (e.g. ["test_*.py", "*_test.py"])
+        self._python_files: list[str] = config.getini("python_files")
+
         # Get pytest invocation scope
         self.scope_paths: list[str] = get_scope_paths(config)
         if self.verbose or config.option.verbose >= 2:
             logger.debug("Scope paths: %s", self.scope_paths)
+
+    def _is_test_file(self, rel_path: str) -> bool:
+        """Check if a relative path is a test file per pytest's ``python_files`` config.
+
+        Uses the same glob patterns pytest uses for test discovery (default:
+        ``test_*.py`` and ``*_test.py``), so custom ``python_files`` settings
+        in ``pyproject.toml`` / ``pytest.ini`` are respected.
+        """
+        from fnmatch import fnmatch
+
+        filename = rel_path.replace("\\", "/").rsplit("/", 1)[-1]
+        return any(fnmatch(filename, pat) for pat in self._python_files)
+
+    def _run_early_diff_analysis(self, config: pytest.Config) -> None:
+        """Run detect_changes + get_affected_tests + get_recorded_tests early.
+
+        Stores results in self._early_diff_data so that pytest_ignore_collect
+        can skip known, unaffected test files before collection.
+        """
+        if self.baseline or self.db is None:
+            return
+
+        try:
+            import json
+            import time
+
+            start = time.time()
+            changed = _core.detect_changes(
+                str(self.db_path), str(get_rootdir(config)), self.scope_paths
+            )
+            recorded_tests = set(self.db.get_recorded_tests())
+            known_test_files: set[str] = {nid.split("::")[0] for nid in recorded_tests}
+
+            # Exclude files with unrecorded (failed) tests from skip candidates.
+            # These files need to be collected so unrecorded tests can be re-run.
+            raw = self.db.get_metadata("baseline_collected_nodeids")
+            if raw:
+                try:
+                    all_collected = set(json.loads(raw))
+                    unrecorded = all_collected - recorded_tests
+                    files_with_unrecorded = {nid.split("::")[0] for nid in unrecorded}
+                    known_test_files -= files_with_unrecorded
+                except (json.JSONDecodeError, TypeError):
+                    pass
+
+            affected_test_files: set[str] = set()
+            if changed.has_changes():
+                affected_tests = set(self.db.get_affected_tests(changed.changed_blocks))
+                affected_test_files = {nid.split("::")[0] for nid in affected_tests}
+                # Include modified test files themselves (may contain new tests)
+                affected_test_files |= {f for f in changed.modified if self._is_test_file(f)}
+
+            self._early_diff_data = {
+                "changed": changed,
+                "recorded_tests": recorded_tests,
+                "known_test_files": known_test_files,
+                "affected_test_files": affected_test_files,
+            }
+            logger.debug(
+                "Early diff analysis in %.3fs: %s known files, %s affected files",
+                time.time() - start,
+                len(known_test_files),
+                len(affected_test_files),
+            )
+        except Exception as e:
+            logger.warning("⚠ pytest-diff: Early diff analysis failed: %s", e)
+            self._early_diff_data = None
 
     @staticmethod
     def _format_size(size_bytes: int) -> str:
@@ -218,6 +289,23 @@ class PytestDiffPlugin:
         if self.baseline:
             self._init_coverage(config)
 
+        # Reconstruct early diff data from workerinput (controller already computed it)
+        workerinput = get_workerinput(config)
+        known = workerinput.get("pytest_diff_known_test_files")
+        affected = workerinput.get("pytest_diff_affected_test_files")
+        if known is not None and affected is not None:
+            self._early_diff_data = {
+                "changed": None,
+                "recorded_tests": set(),
+                "known_test_files": set(known),
+                "affected_test_files": set(affected),
+            }
+            logger.debug(
+                "Worker received early diff data: %s known, %s affected files",
+                len(known),
+                len(affected),
+            )
+
         # Skip remote download - controller already did it
         logger.debug("Worker pytest_configure completed in %.3fs", time.time() - start)
 
@@ -291,6 +379,9 @@ class PytestDiffPlugin:
                     returncode=1,
                 )
 
+        # Run early diff analysis so pytest_ignore_collect can skip unchanged files
+        self._run_early_diff_analysis(config)
+
         logger.debug("pytest_configure completed in %.3fs", time.time() - start)
 
     def _init_coverage(self, config: pytest.Config) -> None:
@@ -318,10 +409,62 @@ class PytestDiffPlugin:
             if config.option.verbose >= 2:
                 logger.debug("Coverage initialized successfully")
 
+    def pytest_ignore_collect(self, collection_path: Path, config: pytest.Config) -> bool | None:
+        """Skip collecting test files that are known and unaffected by changes.
+
+        This avoids importing and parsing test files that would be deselected
+        later in pytest_collection_modifyitems, saving significant time on
+        large codebases.
+        """
+        if self.baseline or not self._early_diff_data:
+            return None
+
+        # Only consider .py files
+        if collection_path.suffix != ".py":
+            return None
+
+        # Never skip conftest.py or __init__.py
+        name = collection_path.name
+        if name in ("conftest.py", "__init__.py"):
+            return None
+
+        try:
+            rel = str(collection_path.relative_to(get_rootdir(config)))
+        except ValueError:
+            return None
+
+        # Only skip test files (non-test .py files are not collected anyway)
+        if not self._is_test_file(rel):
+            return None
+
+        known_test_files = self._early_diff_data["known_test_files"]
+        affected_test_files = self._early_diff_data["affected_test_files"]
+
+        # Skip if file is known to DB AND not affected by changes
+        if rel in known_test_files and rel not in affected_test_files:
+            return True
+
+        return None
+
     def pytest_collection_modifyitems(self, config: pytest.Config, items: list[Any]) -> None:
         """Select tests based on code changes"""
         if not self.enabled:
             return
+
+        # In baseline mode, store all collected nodeids so --diff can detect
+        # files with unrecorded (failed) tests that should not be skipped
+        if self.baseline and self.db is not None:
+            import json
+
+            all_nodeids = {item.nodeid for item in items}
+            # Merge with previously stored nodeids (incremental baseline)
+            raw = self.db.get_metadata("baseline_collected_nodeids")
+            if raw:
+                try:
+                    all_nodeids |= set(json.loads(raw))
+                except (json.JSONDecodeError, TypeError):
+                    pass
+            self.db.set_metadata("baseline_collected_nodeids", json.dumps(sorted(all_nodeids)))
 
         if self.baseline and not self.force:
             # Scope mismatch in baseline mode: run all tests to rebuild properly
@@ -397,15 +540,20 @@ class PytestDiffPlugin:
         check_scope_mismatch(self.db, config, self.scope_paths, is_baseline=False)
 
         try:
-            # Detect changes
-            changed = _core.detect_changes(
-                str(self.db_path), str(get_rootdir(config)), self.scope_paths
-            )
+            # Reuse early diff data if available, otherwise compute fresh
+            if self._early_diff_data:
+                changed = self._early_diff_data["changed"]
+                recorded_tests = self._early_diff_data["recorded_tests"]
+            else:
+                changed = _core.detect_changes(
+                    str(self.db_path), str(get_rootdir(config)), self.scope_paths
+                )
+                assert self.db is not None
+                recorded_tests = set(self.db.get_recorded_tests())
 
             assert self.db is not None
 
             # Find tests with no recorded execution (e.g. previously failed)
-            recorded_tests = set(self.db.get_recorded_tests())
             unrecorded_tests = {item.nodeid for item in items if item.nodeid not in recorded_tests}
             if unrecorded_tests:
                 logger.info("  %s unrecorded tests will be re-run", len(unrecorded_tests))
@@ -884,5 +1032,14 @@ try:
         # Pass DB path to worker via workerinput dict
         node.workerinput["pytest_diff_db_path"] = str(plugin.db_path)
         node.workerinput["pytest_diff_initialized"] = True
+
+        # Pass early diff data so workers can skip unchanged files
+        if plugin._early_diff_data:
+            node.workerinput["pytest_diff_known_test_files"] = list(
+                plugin._early_diff_data["known_test_files"]
+            )
+            node.workerinput["pytest_diff_affected_test_files"] = list(
+                plugin._early_diff_data["affected_test_files"]
+            )
 except ImportError:
     pass

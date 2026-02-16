@@ -72,6 +72,7 @@ pytest-diff uses a three-phase approach:
 - Compares against stored fingerprints to find changed blocks
 
 ### 3. **Test Selection**
+- Skips collecting unchanged test files entirely (`pytest_ignore_collect`) — avoids importing/parsing files that would be deselected
 - Queries database for tests that depend on changed blocks
 - Runs only affected tests
 

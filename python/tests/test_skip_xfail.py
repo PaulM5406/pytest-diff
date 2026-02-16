@@ -175,7 +175,7 @@ def test_skip_xfail_deselected_in_diff_mode(pytester):
     result1 = pytester.runpytest_subprocess("--diff-baseline", "-v")
     result1.assert_outcomes(passed=1, skipped=1, xfailed=1)
 
-    # Diff run with no changes — all tests should be deselected
+    # Diff run with no changes — all tests should be skipped
+    # (file skipped early via pytest_ignore_collect since all tests are recorded)
     result2 = pytester.runpytest_subprocess("--diff", "-v")
     result2.assert_outcomes()
-    result2.stdout.fnmatch_lines(["*Skipping all 3 tests*"])

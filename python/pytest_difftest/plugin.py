@@ -227,13 +227,12 @@ class PytestDiffPlugin:
         import time
 
         batch_len = len(self.test_execution_batch)
-        logger.info("pytest-difftest: Saving %s test executions to DB...", batch_len)
+        logger.debug("pytest-difftest: Saving %s test executions to DB...", batch_len)
         flush_start = time.time()
         for nodeid, fingerprints, duration, failed in self.test_execution_batch:
             self.db.save_test_execution(nodeid, fingerprints, duration, failed, self.python_version)
         elapsed = time.time() - flush_start
-        logger.info("pytest-difftest: Saved %s test executions to DB in %.1fs", batch_len, elapsed)
-        logger.debug("Flushed %s test executions to DB in %.3fs", batch_len, elapsed)
+        logger.debug("pytest-difftest: Saved %s test executions to DB in %.3fs", batch_len, elapsed)
         self.test_execution_batch = []
 
     def pytest_configure(self, config: pytest.Config) -> None:
@@ -326,7 +325,7 @@ class PytestDiffPlugin:
             self.db = _core.PytestDiffDatabase(str(self.db_path))
             logger.debug("Database opened in %.3fs", time.time() - db_start)
             if not (self.remote_url and not self.baseline):
-                logger.info("✓ pytest-difftest: Using database at %s", self.db_path)
+                logger.debug("pytest-difftest: Using database at %s", self.db_path)
         except Exception as e:
             logger.warning("⚠ pytest-difftest: Could not open database: %s", e)
             # Try to delete corrupted database and create fresh
@@ -838,7 +837,7 @@ class PytestDiffPlugin:
                     if self.upload and self.remote_url
                     else ""
                 )
-                logger.info("pytest-difftest: Saving baseline fingerprints...%s", upload_msg)
+                logger.debug("pytest-difftest: Saving baseline fingerprints...%s", upload_msg)
                 start = time.time()
                 count = _core.save_baseline(
                     str(self.db_path),
@@ -913,7 +912,7 @@ class PytestDiffPlugin:
             try:
                 self.db.close()
             except Exception:
-                logger.info(" done")  # Ignore close errors
+                pass  # Ignore close errors
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:

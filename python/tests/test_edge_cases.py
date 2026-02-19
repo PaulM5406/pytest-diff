@@ -64,4 +64,4 @@ def test_large_test_suite_batching(pytester):
     )
     result.assert_outcomes(passed=50)
     # With batch_size=10, we expect multiple flushes
-    result.stdout.fnmatch_lines(["*Flushed 10 test executions*"])
+    result.stdout.fnmatch_lines(["*Saved 10 test executions*"])

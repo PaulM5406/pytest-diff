@@ -137,14 +137,9 @@ fn save_baseline_internal(
 
     let find_start = Instant::now();
     let python_files = find_python_files(project_root, &scope_paths)?;
-    eprint!(
-        "\rpytest-difftest: Scanning {} Python files...",
-        python_files.len()
-    );
     if verbose {
-        eprintln!();
         eprintln!(
-            "[rust] Found {} Python files in {:.3}s",
+            "pytest-difftest: Scanning {} Python files... ({:.3}s)",
             python_files.len(),
             find_start.elapsed().as_secs_f64()
         );
@@ -184,18 +179,14 @@ fn save_baseline_internal(
 
             // Update progress counter
             let count = progress_counter.fetch_add(1, Ordering::Relaxed) + 1;
-            // Print progress every 200 files (or every 50 in verbose mode)
-            let interval = if verbose { 50 } else { 200 };
-            if count.is_multiple_of(interval) || count == total_files {
-                eprint!(
-                    "\rpytest-difftest: Fingerprinting files... {}/{} ({:.0}%)  ",
+            // Print progress every 50 files in verbose mode
+            if verbose && (count.is_multiple_of(50) || count == total_files) {
+                eprintln!(
+                    "pytest-difftest: Fingerprinting files... {}/{} ({:.0}%)",
                     count,
                     total_files,
                     count as f64 / total_files as f64 * 100.0
                 );
-                if verbose {
-                    eprintln!();
-                }
             }
 
             // Check if we can skip this file (hash unchanged) - only when not forcing
@@ -246,21 +237,13 @@ fn save_baseline_internal(
 
     let unchanged_count = skipped_unchanged.load(Ordering::Relaxed);
     let changed_file_count = total_files - unchanged_count;
-    // Clear the progress line
-    eprint!(
-        "\rpytest-difftest: Fingerprinted {} files ({} changed, {} unchanged) in {:.1}s\n",
-        total_files,
-        changed_file_count,
-        unchanged_count,
-        fp_calc_start.elapsed().as_secs_f64()
-    );
     if verbose {
         eprintln!(
-            "[rust] Processed {} files in {:.3}s ({} unchanged, {} need update)",
+            "pytest-difftest: Fingerprinted {} files ({} changed, {} unchanged) in {:.1}s",
             total_files,
-            fp_calc_start.elapsed().as_secs_f64(),
+            changed_file_count,
             unchanged_count,
-            changed_file_count
+            fp_calc_start.elapsed().as_secs_f64()
         );
     }
 
@@ -277,15 +260,17 @@ fn save_baseline_internal(
     }
 
     let changed_count = fingerprints_to_save.len();
-    if changed_count > 0 {
-        eprint!(
-            "pytest-difftest: Writing {} fingerprints to database...",
-            changed_count
-        );
-    }
     let count = if changed_count > 0 {
+        if verbose {
+            eprint!(
+                "pytest-difftest: Writing {} fingerprints to database...",
+                changed_count
+            );
+        }
         let c = db.save_baseline_fingerprints_batch(fingerprints_to_save)?;
-        eprintln!(" done ({:.1}s)", db_save_start.elapsed().as_secs_f64());
+        if verbose {
+            eprintln!(" done ({:.1}s)", db_save_start.elapsed().as_secs_f64());
+        }
         c
     } else {
         0

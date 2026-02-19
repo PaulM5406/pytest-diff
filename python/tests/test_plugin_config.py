@@ -53,7 +53,7 @@ def test_batch_size_cli_override(sample_project):
     )
     result.assert_outcomes(passed=2)
     # With batch_size=1 and verbose, each test triggers a flush
-    result.stdout.fnmatch_lines(["*Flushed 1 test executions*"])
+    result.stdout.fnmatch_lines(["*Saved 1 test executions*"])
 
 
 def test_ini_option_respected(pytester):
@@ -84,7 +84,7 @@ diff_batch_size = 999
         "--diff-baseline", "--diff-v", "--diff-batch-size=1", "-v"
     )
     result.assert_outcomes(passed=1)
-    result.stdout.fnmatch_lines(["*Flushed 1 test executions*"])
+    result.stdout.fnmatch_lines(["*Saved 1 test executions*"])
 
 
 def test_diff_and_baseline_warning(pytester):

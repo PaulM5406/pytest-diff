@@ -157,6 +157,56 @@ def _check_merge_commit_consistency(db: Any, inputs: list[str]) -> None:
         )
 
 
+def inspect_database(db_path: str, test: str | None, file: str | None) -> int:
+    """Inspect a pytest-difftest database for diagnostic purposes.
+
+    Args:
+        db_path: Path to the pytest-difftest database.
+        test: If set, show files this test depends on.
+        file: If set, show tests that depend on this file.
+
+    Returns:
+        Exit code (0 for success, 1 for failure).
+    """
+    from pytest_difftest._core import PytestDiffDatabase
+
+    if not Path(db_path).exists():
+        print(f"Error: Database not found: {db_path}", file=sys.stderr)
+        return 1
+
+    db = PytestDiffDatabase(db_path)
+
+    if test:
+        files = db.get_test_dependencies(test)
+        print(f"Test: {test}")
+        print(f"Depends on {len(files)} file(s):")
+        for f in files:
+            print(f"  {f}")
+    elif file:
+        tests = db.get_file_dependents(file)
+        print(f"File: {file}")
+        print(f"Depended on by {len(tests)} test(s):")
+        for t in tests:
+            print(f"  {t}")
+    else:
+        # Summary mode
+        stats = db.get_stats()
+        print(f"Database: {db_path}")
+        print(f"  Tests:        {stats.get('test_count', 0)}")
+        print(f"  Files:        {stats.get('file_count', 0)}")
+        print(f"  Fingerprints: {stats.get('fingerprint_count', 0)}")
+        print(f"  Baselines:    {stats.get('baseline_count', 0)}")
+        commit = db.get_metadata("baseline_commit")
+        if commit:
+            print(f"  Commit:       {commit[:10]}")
+        scope = db.get_metadata("baseline_scope")
+        if scope:
+            print(f"  Scope:        {scope}")
+
+    db.close()
+    return 0
+
+
 def main() -> int:
     """Main entry point for pytest-difftest CLI."""
     parser = argparse.ArgumentParser(
@@ -187,6 +237,17 @@ def main() -> int:
         "or remote URLs (prefix ending with / downloads all .db files)",
     )
 
+    # inspect command
+    inspect_parser = subparsers.add_parser(
+        "inspect",
+        help="Inspect baseline database contents",
+        description="Inspect a pytest-difftest database. "
+        "Shows summary statistics, test dependencies, or file dependents.",
+    )
+    inspect_parser.add_argument("db_path", help="Path to the pytest-difftest database")
+    inspect_parser.add_argument("--test", help="Show files this test depends on")
+    inspect_parser.add_argument("--file", help="Show tests that depend on this file")
+
     args = parser.parse_args()
 
     if args.command is None:
@@ -195,6 +256,9 @@ def main() -> int:
 
     if args.command == "merge":
         return merge_databases(args.output, args.inputs)
+
+    if args.command == "inspect":
+        return inspect_database(args.db_path, args.test, args.file)
 
     return 0
 

@@ -447,6 +447,26 @@ impl PytestDiffDatabase {
         })
     }
 
+    /// Get filenames that a test depends on (via test_execution_file_fp)
+    fn get_test_dependencies(&self, test_name: &str) -> PyResult<Vec<String>> {
+        self.get_test_dependencies_internal(test_name).map_err(|e| {
+            pyo3::exceptions::PyRuntimeError::new_err(format!(
+                "Failed to get test dependencies: {}",
+                e
+            ))
+        })
+    }
+
+    /// Get test names that depend on a file (via test_execution_file_fp)
+    fn get_file_dependents(&self, filename: &str) -> PyResult<Vec<String>> {
+        self.get_file_dependents_internal(filename).map_err(|e| {
+            pyo3::exceptions::PyRuntimeError::new_err(format!(
+                "Failed to get file dependents: {}",
+                e
+            ))
+        })
+    }
+
     /// Close the database and checkpoint WAL to remove -wal and -shm files
     fn close(&self) -> PyResult<()> {
         let conn = self.conn.write();
@@ -1119,6 +1139,36 @@ impl PytestDiffDatabase {
         )
         .optional()
         .context("Failed to get metadata")
+    }
+
+    fn get_test_dependencies_internal(&self, test_name: &str) -> Result<Vec<String>> {
+        let conn = self.conn.read();
+        let mut stmt = conn.prepare(
+            "SELECT DISTINCT fp.filename
+             FROM test_execution te
+             JOIN test_execution_file_fp teff ON te.id = teff.test_execution_id
+             JOIN file_fp fp ON teff.fingerprint_id = fp.id
+             WHERE te.test_name = ?1
+             ORDER BY fp.filename",
+        )?;
+        let rows = stmt.query_map(params![test_name], |row| row.get(0))?;
+        let files: Vec<String> = rows.collect::<std::result::Result<_, _>>()?;
+        Ok(files)
+    }
+
+    fn get_file_dependents_internal(&self, filename: &str) -> Result<Vec<String>> {
+        let conn = self.conn.read();
+        let mut stmt = conn.prepare(
+            "SELECT DISTINCT te.test_name
+             FROM test_execution te
+             JOIN test_execution_file_fp teff ON te.id = teff.test_execution_id
+             JOIN file_fp fp ON teff.fingerprint_id = fp.id
+             WHERE fp.filename = ?1
+             ORDER BY te.test_name",
+        )?;
+        let rows = stmt.query_map(params![filename], |row| row.get(0))?;
+        let tests: Vec<String> = rows.collect::<std::result::Result<_, _>>()?;
+        Ok(tests)
     }
 
     fn get_baseline_fingerprint_internal(&self, filename: &str) -> Result<Option<Fingerprint>> {

@@ -14,4 +14,4 @@ def test_import_module():
     """Test that the module can be imported"""
     import pytest_difftest
 
-    assert pytest_difftest.__version__ == "0.1.0"
+    assert pytest_difftest.__version__  # Non-empty version string

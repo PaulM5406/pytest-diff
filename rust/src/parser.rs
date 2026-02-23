@@ -55,36 +55,8 @@ fn extract_module_skeleton(
 
     for stmt in parsed {
         match stmt {
-            // Function definitions: include signature only
-            ast::Stmt::FunctionDef(_func_def) => {
-                let start = get_line_number(locator, stmt.start());
-                let end = get_line_number(locator, stmt.end());
-
-                // Extract just the def line(s) - everything up to the colon that ends the signature
-                // Handle multi-line signatures like:
-                //   def foo(
-                //       arg1: int,
-                //       arg2: str,
-                //   ) -> bool:
-                if start <= source_lines.len() {
-                    let def_lines = extract_signature_lines(&source_lines, start, end);
-                    skeleton_parts.push(def_lines.join("\n"));
-                }
-            }
-
-            // Async function definitions: include signature only
-            ast::Stmt::AsyncFunctionDef(_async_func_def) => {
-                let start = get_line_number(locator, stmt.start());
-                let end = get_line_number(locator, stmt.end());
-
-                if start <= source_lines.len() {
-                    let def_lines = extract_signature_lines(&source_lines, start, end);
-                    skeleton_parts.push(def_lines.join("\n"));
-                }
-            }
-
-            // Class definitions: include signature only
-            ast::Stmt::ClassDef(_class_def) => {
+            // Function, async function, and class definitions: include signature only
+            ast::Stmt::FunctionDef(_) | ast::Stmt::AsyncFunctionDef(_) | ast::Stmt::ClassDef(_) => {
                 let start = get_line_number(locator, stmt.start());
                 let end = get_line_number(locator, stmt.end());
 
@@ -231,6 +203,54 @@ fn extract_blocks_from_statements(
     Ok(())
 }
 
+/// Extract a block for a function or async function definition
+///
+/// Shared logic for FunctionDef and AsyncFunctionDef: both use decorator_list
+/// for start_line and body.first() for body_start_line.
+#[allow(clippy::too_many_arguments)]
+fn extract_callable_block(
+    name: &str,
+    block_type: &str,
+    decorator_list: &[ast::Expr],
+    body: &[ast::Stmt],
+    stmt: &ast::Stmt,
+    source: &str,
+    blocks: &mut Vec<Block>,
+    locator: &mut RandomLocator,
+) -> Result<()> {
+    use ast::Ranged;
+
+    let def_line = get_line_number(locator, stmt.start());
+    // Include decorators in start_line so the checksum covers them
+    let start = decorator_list
+        .first()
+        .map(|d| get_line_number(locator, d.start()))
+        .unwrap_or(def_line);
+    let end = get_line_number(locator, stmt.end());
+
+    let block_source = extract_source_lines(source, start, end)?;
+    let checksum = calculate_checksum(&block_source);
+
+    // body_start_line = first line of the function body (skipping decorators + def)
+    let body_start_line = body
+        .first()
+        .map(|s| get_line_number(locator, s.start()))
+        .unwrap_or(def_line);
+
+    blocks.push(Block {
+        start_line: start,
+        end_line: end,
+        checksum,
+        name: name.to_string(),
+        block_type: block_type.to_string(),
+        body_start_line,
+    });
+
+    // Extract nested blocks
+    extract_blocks_from_statements(body, source, blocks, locator)?;
+    Ok(())
+}
+
 /// Extract a block from a single statement
 fn extract_block_from_statement(
     stmt: &ast::Stmt,
@@ -242,65 +262,28 @@ fn extract_block_from_statement(
 
     match stmt {
         ast::Stmt::FunctionDef(func_def) => {
-            let def_line = get_line_number(locator, stmt.start());
-            // Include decorators in start_line so the checksum covers them
-            let start = func_def
-                .decorator_list
-                .first()
-                .map(|d| get_line_number(locator, d.start()))
-                .unwrap_or(def_line);
-            let end = get_line_number(locator, stmt.end());
-
-            let block_source = extract_source_lines(source, start, end)?;
-            let checksum = calculate_checksum(&block_source);
-
-            // body_start_line = first line of the function body (skipping decorators + def)
-            let body_start_line = func_def
-                .body
-                .first()
-                .map(|s| get_line_number(locator, s.start()))
-                .unwrap_or(def_line);
-
-            blocks.push(Block {
-                start_line: start,
-                end_line: end,
-                checksum,
-                name: func_def.name.to_string(),
-                block_type: "function".to_string(),
-                body_start_line,
-            });
-
-            // Extract nested blocks
-            extract_blocks_from_statements(&func_def.body, source, blocks, locator)?;
+            extract_callable_block(
+                &func_def.name,
+                "function",
+                &func_def.decorator_list,
+                &func_def.body,
+                stmt,
+                source,
+                blocks,
+                locator,
+            )?;
         }
         ast::Stmt::AsyncFunctionDef(async_func_def) => {
-            let def_line = get_line_number(locator, stmt.start());
-            let start = async_func_def
-                .decorator_list
-                .first()
-                .map(|d| get_line_number(locator, d.start()))
-                .unwrap_or(def_line);
-            let end = get_line_number(locator, stmt.end());
-
-            let block_source = extract_source_lines(source, start, end)?;
-            let checksum = calculate_checksum(&block_source);
-
-            let body_start_line = async_func_def
-                .body
-                .first()
-                .map(|s| get_line_number(locator, s.start()))
-                .unwrap_or(def_line);
-
-            blocks.push(Block {
-                start_line: start,
-                end_line: end,
-                checksum,
-                name: async_func_def.name.to_string(),
-                block_type: "async_function".to_string(),
-                body_start_line,
-            });
-
-            extract_blocks_from_statements(&async_func_def.body, source, blocks, locator)?;
+            extract_callable_block(
+                &async_func_def.name,
+                "async_function",
+                &async_func_def.decorator_list,
+                &async_func_def.body,
+                stmt,
+                source,
+                blocks,
+                locator,
+            )?;
         }
         ast::Stmt::ClassDef(class_def) => {
             let def_line = get_line_number(locator, stmt.start());

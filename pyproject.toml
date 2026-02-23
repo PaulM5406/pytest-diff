@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "pytest-difftest"
-version = "0.2.0"
+version = "0.3.0"
 description = "Blazingly fast test selection for pytest - only run tests affected by your changes (Rust-powered)"
 readme = "README.md"
 authors = [{name = "Paul Milesi"}]

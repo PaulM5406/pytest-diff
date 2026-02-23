@@ -7,8 +7,10 @@ based on code changes.
 
 from __future__ import annotations
 
+import json
 import logging
 import sys
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -121,10 +123,8 @@ class PytestDiffPlugin:
         self.test_files_executed: list[str] = []
 
         # Get Python version for environment tracking
-        import sys as _sys
-
         self.python_version: str = (
-            f"{_sys.version_info.major}.{_sys.version_info.minor}.{_sys.version_info.micro}"
+            f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
         )
 
         # Batch writing for test executions
@@ -164,9 +164,6 @@ class PytestDiffPlugin:
             return
 
         try:
-            import json
-            import time
-
             start = time.time()
             changed = _core.detect_changes(
                 str(self.db_path), str(get_rootdir(config)), self.scope_paths
@@ -224,8 +221,6 @@ class PytestDiffPlugin:
         if not self.test_execution_batch or self.db is None:
             return
 
-        import time
-
         batch_len = len(self.test_execution_batch)
         logger.debug("pytest-difftest: Saving %s test executions to DB...", batch_len)
         flush_start = time.time()
@@ -254,8 +249,6 @@ class PytestDiffPlugin:
         Workers receive the DB path from the controller via workerinput.
         They open the existing DB (schema already created) and skip remote download.
         """
-        import time
-
         start = time.time()
         logger.debug("Configuring as xdist worker")
 
@@ -313,8 +306,6 @@ class PytestDiffPlugin:
 
         Controllers/standalone create the DB, download remote baseline, etc.
         """
-        import time
-
         start = time.time()
         role = "controller" if self.is_controller else "standalone"
         logger.debug("Starting pytest_configure as %s", role)
@@ -384,29 +375,17 @@ class PytestDiffPlugin:
         logger.debug("pytest_configure completed in %.3fs", time.time() - start)
 
     def _init_coverage(self, config: pytest.Config) -> None:
-        """Initialize coverage collector if available."""
-        coverage_module: Any = None
-        try:
-            import coverage as coverage_module
-        except ImportError:
-            pass
+        """Initialize coverage collector."""
+        import coverage
 
-        if config.option.verbose >= 2:
-            logger.debug("Coverage module available: %s", coverage_module is not None)
-
-        if coverage_module:
-            import time
-
-            cov_start = time.time()
-            self.cov = coverage_module.Coverage(
-                data_file=None,  # Don't save coverage data
-                branch=False,
-                config_file=False,
-                source=[str(get_rootdir(config))],
-            )
-            logger.debug("Coverage initialized in %.3fs", time.time() - cov_start)
-            if config.option.verbose >= 2:
-                logger.debug("Coverage initialized successfully")
+        cov_start = time.time()
+        self.cov = coverage.Coverage(
+            data_file=None,  # Don't save coverage data
+            branch=False,
+            config_file=False,
+            source=[str(get_rootdir(config))],
+        )
+        logger.debug("Coverage initialized in %.3fs", time.time() - cov_start)
 
     def pytest_ignore_collect(self, collection_path: Path, config: pytest.Config) -> bool | None:
         """Skip collecting test files that are known and unaffected by changes.
@@ -453,8 +432,6 @@ class PytestDiffPlugin:
         # In baseline mode, store all collected nodeids so --diff can detect
         # files with unrecorded (failed) tests that should not be skipped
         if self.baseline and self.db is not None:
-            import json
-
             all_nodeids = {item.nodeid for item in items}
             # Merge with previously stored nodeids (incremental baseline)
             raw = self.db.get_metadata("baseline_collected_nodeids")
@@ -629,34 +606,20 @@ class PytestDiffPlugin:
 
             traceback.print_exc()
 
-    def _test_file_fingerprint(self, item: Any) -> list[Any]:
-        """Calculate fingerprint for the test file itself (no coverage)."""
-        test_file = Path(item.fspath).resolve()
-        if test_file.exists() and test_file.suffix == ".py":
-            try:
-                return [_core.calculate_fingerprint(str(test_file), str(get_rootdir(self.config)))]
-            except Exception:
-                pass
-        return []
-
     def pytest_runtest_protocol(self, item: Any, nextitem: Any) -> None:
         """Start coverage collection for a test"""
         if not self.enabled:
             return
 
-        import time
-
         self.current_test = item.nodeid
         self.test_start_time = time.time()
         self.test_files_executed = []
 
-        # Start coverage collection
+        # Start coverage collection (only in baseline mode; --diff mode has self.cov=None)
         if self.cov:
             if self.config.option.verbose >= 2:
                 logger.debug("Starting coverage for %s", item.nodeid)
             self.cov.start()
-        elif self.config.option.verbose >= 2:
-            logger.debug("Coverage not available for %s", item.nodeid)
 
     def pytest_runtest_makereport(self, item: Any, call: Any) -> None:
         """Capture test result and save to database"""
@@ -678,18 +641,22 @@ class PytestDiffPlugin:
             if self.cov:
                 self.cov.stop()
                 self.cov.erase()
-            fingerprints = self._test_file_fingerprint(item)
-            if fingerprints:
-                self.test_execution_batch.append((item.nodeid, fingerprints, 0.0, False))
-                if len(self.test_execution_batch) >= self.batch_size:
-                    self._flush_test_batch()
+            # Record a test-file-only fingerprint so the test is marked as "recorded"
+            # and won't be re-run on incremental baseline
+            test_file = Path(item.fspath).resolve()
+            if test_file.exists() and test_file.suffix == ".py":
+                try:
+                    fp = _core.calculate_fingerprint(str(test_file), str(get_rootdir(self.config)))
+                    self.test_execution_batch.append((item.nodeid, [fp], 0.0, False))
+                    if len(self.test_execution_batch) >= self.batch_size:
+                        self._flush_test_batch()
+                except Exception:
+                    pass
             return
 
         # Only save after test execution (not setup/teardown)
         if call.when != "call":
             return
-
-        import time
 
         report_start = time.time()
         # Calculate duration safely - if test_start_time is None, duration is 0
@@ -762,9 +729,6 @@ class PytestDiffPlugin:
                 erase_start = time.time()
                 self.cov.erase()
                 logger.debug("Coverage erase took %.3fs", time.time() - erase_start)
-            else:
-                # If no coverage, still track the test file itself
-                fingerprints = self._test_file_fingerprint(item)
 
             # Skip genuinely failed tests so they remain "unknown" and get re-selected
             # on the next --diff run until they pass.
@@ -829,8 +793,6 @@ class PytestDiffPlugin:
         # If baseline mode, save baseline fingerprints (controller/standalone only)
         if self.baseline:
             try:
-                import time
-
                 logger.debug("Starting baseline save")
                 upload_msg = (
                     f" (will upload to {self.remote_url})"
@@ -863,8 +825,6 @@ class PytestDiffPlugin:
 
                 # Store scope paths (relative to rootdir) so diff runs can detect mismatches
                 if self.db:
-                    import json
-
                     rootdir = str(get_rootdir(self.config))
                     relative_scopes = relative_scope_paths(self.scope_paths, rootdir)
                     self.db.set_metadata("baseline_scope", json.dumps(relative_scopes))

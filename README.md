@@ -139,6 +139,21 @@ pytest-difftest merge s3://bucket/baseline.db s3://bucket/run-123/
 
 Output and inputs can be local paths, directories, or remote URLs. Directories collect all `.db` files; remote prefixes ending with `/` download all `.db` files.
 
+### CLI: `pytest-difftest inspect`
+
+Inspect a baseline database for diagnostics — useful for debugging test selection.
+
+```bash
+# Show database summary (test count, file count, baselines, commit)
+pytest-difftest inspect .pytest_cache/pytest-difftest/pytest_difftest.db
+
+# Show which files a specific test depends on
+pytest-difftest inspect .pytest_cache/pytest-difftest/pytest_difftest.db --test tests/test_foo.py::test_bar
+
+# Show which tests depend on a specific file
+pytest-difftest inspect .pytest_cache/pytest-difftest/pytest_difftest.db --file src/models.py
+```
+
 ## Development
 
 ### Prerequisites
